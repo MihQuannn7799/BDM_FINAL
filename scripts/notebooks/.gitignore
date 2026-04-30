@@ -1,9 +1,11 @@
 data/entities/
 data/relations/
 *.demo
-*.data
-*.docs
+data/
+docs/
 *.docx
 
 data/output/
 docs/note/
+LICENSE
+CITATION.bib
