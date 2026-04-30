@@ -5,17 +5,16 @@ REQUIRED_GB = 35
 BASE_URL = "https://lfs.aminer.cn/misc/moocdata/data/mooccube2/"
 
 FILES = [
-    # "entities/course.json",
-    # "entities/problem.json",
-    # "entities/user.json",
-    # "relation/exercise-problem.txt",
-    # "relation/user-problem.json",
-    #"relations/user-video.json",
-    #"relations/concept-course.txt"
-    #"prerequisites/cs.json"
-    #"relations/video_id-ccid.txt"
-    #"relations/concept-video.txt",
-    #"relations/concept-problem.txt"
+    "entities/course.json",
+    "entities/problem.json",
+    "entities/user.json",
+    "relation/exercise-problem.txt",
+    "relation/user-problem.json",
+    "relations/user-video.json",
+    "relations/concept-course.txt"
+    "relations/video_id-ccid.txt"
+    "relations/concept-video.txt",
+    "relations/concept-problem.txt"
     "entities/concept.json"
 ]
 
