@@ -1,0 +1,631 @@
+================================================================================
+STEP 4: XÂY DỰNG ĐỒ THỊ TRI THỨC - GIẢI THÍCH CHI TIẾT
+================================================================================
+
+DỰ ÁN: MOOCCubeX - Hệ thống học tập thích ứng trong MOOCs
+FILE: step4_knowledge_graph.ipynb
+VỊ TRÍ: scripts/notebooks/step4_knowledge_graph.ipynb
+
+================================================================================
+1. TỔNG QUAN VÀ MỤC ĐÍCH
+================================================================================
+
+Step 4 thực hiện XÂY DỰNG ĐỒ THỊ TRI THỨC (Knowledge Graph Construction)
+ở cấp độ khóa học, kết hợp thông tin về khái niệm và thứ tự thời gian.
+
+MỤC TIÊU CHÍNH:
+- Xây dựng đồ thị chuyển tiếp giữa các khóa học (course transition graph)
+- Kết hợp 2 yếu tố: PHỦ KHÁI NIỆM (concept overlap) và THỨ TỰ THỜI GIAN
+- Tạo cạnh có trọng số phản ánh mối quan hệ giữa các courses
+- Trực quan hóa và xuất đồ thị cho các ứng dụng downstream
+
+INPUT (ĐẦU VÀO):
+- user_sequences.json: Chuỗi khóa học từ Step 2
+- course_concepts.json: Ánh xạ khóa học → khái niệm
+- (Optional) course_prerequisites: Tiên quyết từ Step 3
+
+OUTPUT (ĐẦU RA):
+- knowledge_graph.gml: Định dạng GML cho tools đồ thị
+- knowledge_graph.pkl: Định dạng pickle cho Python
+- knowledge_graph_edges.csv: Danh sách cạnh để phân tích
+- knowledge_graph_final.png: Hình trực quan hóa
+
+TẠI SAO CẦN STEP 4?
+-------------------
+Các steps trước tạo ra:
+- Step 1: Ma trận R(u,c) - user phù hợp course nào
+- Step 2: Chuỗi khóa học - user học theo thứ tự nào
+- Step 3: Tiên quyết - course nào là tiên quyết của course nào
+
+Step 4 TỔNG HỢP tất cả thành một ĐỒ THỊ TRI THỨC:
+- Nodes: Courses
+- Edges: Mối quan hệ giữa courses (có trọng số)
+- Trọng số = concept overlap + temporal precedence
+
+ỨNG DỤNG:
+- Tìm lộ trình học tối ưu
+- Gợi ý course tiếp theo dựa trên đồ thị
+- Phân tích cấu trúc chương trình học
+- Visualize mối quan hệ giữa các courses
+
+================================================================================
+2. CÔNG THỨC VÀ LOGIC CHÍNH
+================================================================================
+
+2.1. CÔNG THỨC TRỌNG SỐ CẠNH
+----------------------------
+
+Edge Weight Formula:
+
+    weight(C₁ → C₂) = α·concept_overlap(C₁, C₂) + β·temporal_precedence(C₁, C₂)
+
+Trong đó:
+- α (ALPHA) = 0.6: Trọng số cho concept overlap
+- β (BETA) = 0.4: Trọng số cho temporal precedence
+- α + β = 1.0 (chuẩn hóa)
+
+TẠI SAO CHỌN α=0.6, β=0.4?
+- Concept overlap (60%) quan trọng hơn temporal (40%)
+- Vì: Nội dung học (khái niệm) phản ánh mối quan hệ thực sự tốt hơn
+- Temporal có thể bị nhiễu (user học không đúng thứ tự)
+
+2.2. CONCEPT OVERLAP (JACCARD SIMILARITY)
+-----------------------------------------
+
+Công thức:
+    concept_overlap(C₁, C₂) = |concepts(C₁) ∩ concepts(C₂)| / |concepts(C₁) ∪ concepts(C₂)|
+
+ĐÂY LÀ JACCARD SIMILARITY:
+- Tử số: Số khái niệm CHUNG giữa 2 courses
+- Mẫu số: Tổng số khái niệm DUY NHẤT của cả 2 courses
+- Kết quả: [0, 1]
+  + 0 = không có khái niệm chung
+  + 1 = tất cả khái niệm đều giống nhau
+
+VÍ DỤ:
+Course A: {khái niệm 1, 2, 3, 4}
+Course B: {khái niệm 3, 4, 5, 6, 7}
+
+- Intersection (∩): {3, 4} → 2 khái niệm
+- Union (∪): {1, 2, 3, 4, 5, 6, 7} → 7 khái niệm
+- Jaccard = 2/7 ≈ 0.286
+
+2.3. TEMPORAL PRECEDENCE
+------------------------
+
+Công thức:
+    temporal_precedence(C₁ → C₂) = count(C₁ trước C₂) / count(C₁ và C₂ cùng xuất hiện)
+
+DIỄN GIẢI:
+- Tử số: Số lần C₁ được học TRƯỚC C₂
+- Mẫu số: Số lần C₁ và C₂ cùng được học (bất kể thứ tự)
+- Kết quả: [0, 1]
+  + 1 = luôn học C₁ trước C₂
+  + 0.5 = ngẫu nhiên, không có thứ tự rõ ràng
+  + 0 = luôn học C₂ trước C₁
+
+VÍ DỤ:
+- 100 users học cả C₁ và C₂
+- 80 users học C₁ trước C₂
+- 20 users học C₂ trước C₁
+- temporal_precedence = 80/100 = 0.8
+
+2.4. VÍ DỤ TÍNH TOÁN TRỌNG SỐ
+-----------------------------
+
+Giả sử:
+- concept_overlap(C₁, C₂) = 0.286
+- temporal_precedence(C₁ → C₂) = 0.8
+
+weight(C₁ → C₂) = 0.6 × 0.286 + 0.4 × 0.8
+                = 0.1716 + 0.32
+                = 0.4916
+
+================================================================================
+3. GIẢI THÍCH TỪNG BƯỚC CODE - TẠI SAO LẠI LÀM NHƯ VẬY?
+================================================================================
+
+BƯỚC 4.1: KHỞI TẠO VÀ CẤU HÌNH
+------------------------------
+Code:
+    import json
+    import pickle
+    import networkx as nx
+    from collections import defaultdict
+    import matplotlib.pyplot as plt
+
+    OUTPUT_PATH = "C:/Hanu/year3/year3_semester2/BDM/final_project/MOOCCubeX/data/output"
+
+    ALPHA = 0.6  # Concept overlap weight
+    BETA = 0.4   # Temporal precedence weight
+
+THƯ VIỆN SỬ DỤNG:
+- networkx (nx): Thư viện Python cho đồ thị
+- matplotlib: Vẽ và trực quan hóa
+- defaultdict: Dictionary với default value (tiện cho counting)
+- pickle: Lưu object Python binary
+
+TẠI SAO α=0.6, β=0.4?
+- Ưu tiên nội dung học (concept) hơn thứ tự thời gian
+- Concept overlap phản ánh mối quan hệ NGỮ NGHĨA
+- Temporal có thể bị nhiễu do user học không theo thứ tự
+
+BƯỚC 4.2: LOAD DỮ LIỆU
+----------------------
+Code:
+    with open(f"{OUTPUT_PATH}/user_sequences.json", "r") as f:
+        user_sequences = json.load(f)
+
+    with open(f"{OUTPUT_PATH}/course_concepts.json", "r") as f:
+        course_concepts = json.load(f)
+
+    print(f"Loaded {len(user_sequences)} user sequences")
+    print(f"Loaded {len(course_concepts)} course concept mappings")
+
+DỮ LIỆU ĐẦU VÀO:
+- user_sequences.json: 11,385 users với chuỗi khóa học
+- course_concepts.json: 887 courses với danh sách khái niệm
+
+TẠI SAO CẦN course_concepts?
+- Để tính concept overlap giữa các courses
+- Không có file này → không tính được Jaccard similarity
+- File này thường được tạo từ Step 1 hoặc preprocessing
+
+KẾT QUẢ:
+- 11,385 user sequences
+- 887 course concept mappings
+
+BƯỚC 4.3: TÍNH TOÁN CHUYỂN TIẾP GIỮA CÁC KHÓA HỌC
+-------------------------------------------------
+Code:
+    course_transitions = defaultdict(lambda: defaultdict(int))
+    course_cooccurrence = defaultdict(lambda: defaultdict(int))
+
+    for record in user_sequences:
+        user_id = record["user_id"]
+        sequence = record["sequence"]
+        sequence = sorted(sequence, key=lambda x: x[0])  # Sort by order
+
+        courses = [item[1] for item in sequence]  # Extract course_ids
+
+        n = len(courses)
+        for i in range(n):
+            for j in range(i + 1, n):
+                course_a = courses[i]
+                course_b = courses[j]
+
+                course_transitions[course_a][course_b] += 1
+                course_cooccurrence[course_a][course_b] += 1
+                course_cooccurrence[course_b][course_a] += 1
+
+GIẢI THÍCH:
+
+a) course_transitions:
+   - Đếm số lần course_a được học TRƯỚC course_b
+   - Chỉ đếm 1 chiều: a → b (không đếm b → a)
+   - Dùng để tính temporal_precedence
+
+b) course_cooccurrence:
+   - Đếm số lần 2 courses cùng xuất hiện
+   - Đếm 2 chiều: cả a → b và b → a
+   - Dùng làm mẫu số cho temporal_precedence
+
+TẠI SAO SORT SEQUENCE?
+- Đảm bảo thứ tự thời gian đúng
+- sequence từ Step 2 có thể chưa được sort
+- Sort theo sequence_order (item[0])
+
+TẠI SAO DÙNG 2 VÒNG LẶP (i, j)?
+- Để tạo TẤT CẢ cặp có thứ tự
+- i từ 0 đến n-1
+- j từ i+1 đến n-1 → đảm bảo j > i (course_b sau course_a)
+
+VÍ DỤ:
+Sequence: [A, B, C, D]
+Các cặp tạo ra:
+- i=0 (A): (A,B), (A,C), (A,D)
+- i=1 (B): (B,C), (B,D)
+- i=2 (C): (C,D)
+
+→ 6 cặp từ 4 courses
+
+KẾT QUẢ: 246,332 unique course pairs
+
+BƯỚC 4.4: TÍNH CONCEPT OVERLAP (JACCARD)
+----------------------------------------
+Code:
+    def jaccard_similarity(set_a, set_b):
+        if not set_a or not set_b:
+            return 0.0
+        intersection = len(set(set_a) & set(set_b))
+        union = len(set(set_a) | set(set_b))
+        return intersection / union if union > 0 else 0.0
+
+    concept_overlap = {}
+
+    for course_a, inner_dict in course_transitions.items():
+        concept_overlap[course_a] = {}
+        concepts_a = course_concepts.get(course_a, [])
+
+        for course_b in inner_dict.keys():
+            concepts_b = course_concepts.get(course_b, [])
+            overlap = jaccard_similarity(concepts_a, concepts_b)
+            concept_overlap[course_a][course_b] = overlap
+
+TẠI SAO DÙNG JACCARD?
+- Jaccard là metric chuẩn cho similarity giữa 2 sets
+- Tự động chuẩn hóa về [0, 1]
+- Không bị ảnh hưởng bởi kích thước sets khác nhau
+
+TẠI SAO CHECK "if not set_a or not set_b"?
+- Phòng trường hợp course không có concepts
+- Nếu 1 trong 2 sets rỗng → Jaccard = 0
+
+TẠI SAO CHỈ TÍNH CHO COURSES CÓ TRANSITION?
+- Chỉ quan tâm đến pairs mà users thực sự học
+- Không cần tính cho tất cả 887×886 = 785,882 pairs
+- Tiết kiệm computation
+
+KẾT QUẢ: Tính concept overlap cho 742 courses
+
+BƯỚC 4.5: XÂY DỰNG ĐỒ THỊ
+-------------------------
+Code:
+    G = nx.DiGraph()  # Directed Graph
+
+    # Add nodes
+    for course_id, concepts in course_concepts.items():
+        G.add_node(
+            course_id,
+            num_concepts=len(concepts),
+            concepts=concepts
+        )
+
+    # Add edges
+    edge_count = 0
+    for course_a, inner_dict in course_transitions.items():
+        for course_b, transition_count in inner_dict.items():
+            # Temporal precedence probability
+            temporal_prob = transition_count / course_cooccurrence[course_a][course_b]
+
+            # Concept overlap
+            overlap = concept_overlap.get(course_a, {}).get(course_b, 0)
+
+            # Combined weight
+            weight = ALPHA * overlap + BETA * temporal_prob
+
+            if weight > 0.4:
+                G.add_edge(
+                    course_a, course_b,
+                    weight=weight,
+                    concept_overlap=overlap,
+                    temporal_prob=temporal_prob,
+                    transition_count=transition_count
+                )
+                edge_count += 1
+
+TẠI SAO DÙNG DiGraph (Directed Graph)?
+- Quan hệ giữa courses có HƯỚNG
+- C₁ → C₂ khác C₂ → C₁ (thứ tự học)
+- DiGraph phù hợp cho prerequisite/transition
+
+TẠI SAO LƯU NHIỀU ATTRIBUTES CHO EDGE?
+- weight: Trọng số tổng hợp (dùng cho algorithms)
+- concept_overlap: Thành phần concept (dùng cho analysis)
+- temporal_prob: Thành phần temporal (dùng cho analysis)
+- transition_count: Số lần chuyển tiếp (dùng cho filtering)
+
+TẠI SAO FILTER weight > 0.4?
+- Loại bỏ các cạnh "yếu"
+- weight ≤ 0.4 → mối quan hệ không đủ mạnh
+- Giảm số cạnh → đồ thị dễ phân tích và visualize hơn
+- Threshold có thể điều chỉnh (0.3-0.5)
+
+CÔNG THỨC TÍNH weight:
+    weight = 0.6 × overlap + 0.4 × temporal_prob
+
+VÍ DỤ:
+- overlap = 0.3, temporal_prob = 0.8
+- weight = 0.6×0.3 + 0.4×0.8 = 0.18 + 0.32 = 0.50 → KEEP (> 0.4)
+
+KẾT QUẢ:
+- 887 nodes (courses)
+- 3,407 edges (sau filter)
+
+BƯỚC 4.6: THỐNG KÊ ĐỒ THỊ
+-------------------------
+Code:
+    print(f"Nodes (courses): {G.number_of_nodes()}")
+    print(f"Edges (transitions): {G.number_of_edges()}")
+    print(f"Density: {nx.density(G):.4f}")
+
+    in_degrees = [d for n, d in G.in_degree()]
+    out_degrees = [d for n, d in G.out_degree()]
+
+    print(f"In-degree: avg={sum(in_degrees)/len(in_degrees):.2f}, max={max(in_degrees)}")
+    print(f"Out-degree: avg={sum(out_degrees)/len(out_degrees):.2f}, max={max(out_degrees)}")
+
+    # Top courses by out-degree
+    top_prereqs = sorted(G.out_degree(), key=lambda x: x[1], reverse=True)[:10]
+
+CÁC METRICS:
+
+a) Density (Mật độ):
+    density = |E| / (|V| × (|V|-1))
+    - |E| = số edges
+    - |V| = số nodes
+    - Density = 0.0043 → đồ thị thưa (sparse)
+    - Bình thường cho đồ thị lớn
+
+b) In-degree:
+    - Số edges HƯỚNG VÀO node
+    - Course có in-degree cao = được học NHIỀU SAU courses khác
+    - "Advanced course" (học sau khi học nhiều courses khác)
+
+c) Out-degree:
+    - Số edges HƯỚNG RA node
+    - Course có out-degree cao = là tiên quyết cho NHIỀU courses
+    - "Foundation course" (nền tảng)
+
+TOP 10 PREREQUISITE COURSES:
+    C_769293: 61 successors
+    C_655850: 48 successors
+    C_707173: 33 successors
+    ...
+
+DIỄN GIẢI:
+- C_769293 là nền tảng quan trọng nhất (61 courses học sau nó)
+- C_655850 là nền tảng thứ 2 (48 courses)
+- Các courses này nên được học sớm trong lộ trình
+
+BƯỚC 4.7: TRỰC QUAN HÓA ĐỒ THỊ
+------------------------------
+Code lọc và vẽ đồ thị:
+
+    # Filter: lấy top 15 courses
+    top_courses = set([course for course, _ in top_prereqs[:15]])
+    G_filtered = G.subgraph(top_courses).copy()
+
+    # Filter edges: chỉ giữ top 2 edges per node, weight >= threshold
+    THRESHOLD = 0.427
+    TOP_K_PER_NODE = 2
+
+    G_sub = nx.DiGraph()
+    for node in G_filtered.nodes():
+        edges = sorted(
+            G_filtered.out_edges(node, data=True),
+            key=lambda x: x[2].get("weight", 0),
+            reverse=True
+        )[:TOP_K_PER_NODE]
+
+        for u, v, d in edges:
+            if d.get("weight", 0) >= THRESHOLD:
+                G_sub.add_edge(u, v, weight=d["weight"])
+
+TẠI SAO FILTER?
+- Đồ thị đầy đủ có 3,407 edges → quá phức tạp để vẽ
+- Chỉ vẽ subgraph với top courses quan trọng
+- Mỗi node chỉ giữ top 2 edges → đồ thị rõ ràng hơn
+
+TẠI SAO THRESHOLD = 0.427?
+- Threshold empirically chọn để có đồ thị đẹp
+- Có thể điều chỉnh để có số edges phù hợp
+- Cao hơn → ít edges, thấp hơn → nhiều edges
+
+XỬ LÝ CYCLES:
+    if not nx.is_directed_acyclic_graph(G_sub):
+        G_sub = nx.DiGraph(nx.maximum_spanning_tree(G_sub.to_undirected()))
+
+TẠI SAO CẦN ACYCLIC?
+- Đồ thị tiên quyết phải là DAG (Directed Acyclic Graph)
+- Cycle = A → B → A (vô lý về mặt tiên quyết)
+- maximum_spanning_tree: giữ lại edges có weight cao nhất, loại bỏ cycles
+
+XÂY DỰNG LEVELS (THỨ BẬC):
+    levels = {}
+    for node in nx.topological_sort(G_sub):
+        preds = list(G_sub.predecessors(node))
+        levels[node] = 0 if not preds else max(levels[p] for p in preds) + 1
+
+TẠI SAO CẦN LEVELS?
+- Level 0: courses nền tảng (không có predecessors)
+- Level 1: courses học sau level 0
+- Level 2: courses học sau level 1
+- ...
+- Giúp layout đồ thị theo thứ bậc (hierarchy)
+
+MÀU SẮC NODES:
+    if lvl == 0:
+        node_colors.append("#2ca25f")   # foundation (green)
+    elif lvl >= max_level - 1:
+        node_colors.append("#756bb1")   # advanced (purple)
+    else:
+        node_colors.append("#fd8d3c")   # intermediate (orange)
+
+Ý NGHĨA MÀU SẮC:
+- Xanh lá (green): courses nền tảng (level 0)
+- Cam (orange): courses trung gian
+- Tím (purple): courses nâng cao (level cao nhất)
+
+DRAW GRAPH:
+    plt.figure(figsize=(12, 9))
+    nx.draw_networkx_nodes(...)
+    nx.draw_networkx_edges(..., edge_cmap=plt.cm.Blues)
+    nx.draw_networkx_labels(...)
+    plt.savefig(f"{OUTPUT_PATH}/knowledge_graph_final.png", dpi=300)
+
+OUTPUT:
+- Hình 12x9 inches, 300 DPI (chất lượng cao)
+- Edges màu xanh dương (Blues colormap)
+- Labels hiển thị course IDs
+
+BƯỚC 4.8: LƯU ĐỒ THỊ
+--------------------
+Code:
+    # Save as GML
+    nx.write_gml(G, f"{OUTPUT_PATH}/knowledge_graph.gml")
+
+    # Save as pickle
+    with open(f"{OUTPUT_PATH}/knowledge_graph.pkl", "wb") as f:
+        pickle.dump(G, f)
+
+    # Save edge list as CSV
+    edge_list = []
+    for u, v, data in G.edges(data=True):
+        edge_list.append({
+            'source': u,
+            'target': v,
+            'weight': data['weight'],
+            'concept_overlap': data['concept_overlap'],
+            'temporal_prob': data['temporal_prob']
+        })
+
+    edge_df = pd.DataFrame(edge_list)
+    edge_df.to_csv(f"{OUTPUT_PATH}/knowledge_graph_edges.csv", index=False)
+
+TẠI SAO NHIỀU ĐỊNH DẠNG?
+
+a) GML (Graph Modeling Language):
+   - Format chuẩn cho đồ thị
+   - Import được vào Gephi, Cytoscape, Graphviz
+   - Giữ nguyên cấu trúc và attributes
+
+b) Pickle:
+   - Binary format của Python
+   - Load nhanh, giữ nguyên object NetworkX
+   - Dùng cho Python applications
+
+c) CSV:
+   - Format đơn giản, đọc được bằng Excel
+   - Dễ phân tích bằng pandas
+   - Dùng cho báo cáo, thống kê
+
+================================================================================
+4. ỨNG DỤNG CỦA ĐỒ THỊ TRI THỨC
+================================================================================
+
+4.1. TÌM LỘ TRÌNH HỌC TỐI ƯU
+----------------------------
+
+Dùng đồ thị để tìm đường đi ngắn nhất:
+- Start: courses đã học
+- End: course mục tiêu
+- Path: lộ trình học đề xuất
+
+VÍ DỤ:
+User muốn học C_883345 (Machine Learning)
+Shortest path từ courses đã học → C_883345:
+  C_629559 → C_674903 → C_883345
+
+4.2. GỢI Ý COURSE TIẾP THEO
+---------------------------
+
+Dựa vào out-neighbors:
+- User đã học C_629559
+- Out-neighbors: C_677076, C_697032, C_694136, ...
+- Gợi ý courses có weight cao nhất
+
+4.3. PHÂN TÍCH CẤU TRÚC CHƯƠNG TRÌNH
+------------------------------------
+
+Từ degree statistics:
+- Courses có out-degree cao → nền tảng quan trọng
+- Courses có in-degree cao → advanced courses
+- Density thấp → chương trình phân tán, ít kết nối
+
+4.4. IDENTIFY BOTTLENECK COURSES
+--------------------------------
+
+Courses có cả in-degree và out-degree cao:
+- Là "cửa ngõ" bắt buộc phải qua
+- Nếu user fail course này → không học được nhiều courses khác
+- Cần hỗ trợ đặc biệt cho các courses này
+
+================================================================================
+5. SO SÁNH VỚI STEP 3
+================================================================================
+
++------------------+------------------+------------------+
+| YẾU TỐ           | STEP 3           | STEP 4           |
++------------------+------------------+------------------+
+| Mục tiêu         | Prerequisites    | Knowledge Graph  |
+| Dựa trên         | Pass/Fail        | Concept + Time   |
+| Output           | Dict (A→B)       | Graph (nodes+edges)|
+| Trọng số         | P_success        | α×overlap+β×time |
+| Ứng dụng         | Path planning    | Recommendation   |
++------------------+------------------+------------------+
+
+KHÁC BIỆT CHÍNH:
+- Step 3: Chỉ dùng Pass/Fail → hard threshold (0.4)
+- Step 4: Dùng concept + temporal → soft weight (continuous)
+- Step 4 phong phú hơn, nhiều information hơn
+
+================================================================================
+6. HẠN CHẾ VÀ LƯU Ý
+================================================================================
+
+6.1. VỀ WEIGHT THRESHOLD
+------------------------
+- Threshold 0.4 là arbitrary
+- Có thể điều chỉnh dựa trên application:
+  + Recommendation: threshold thấp (giữ nhiều edges)
+  + Path planning: threshold cao (chỉ edges mạnh)
+
+6.2. VỀ CONCEPT OVERLAP
+-----------------------
+- Jaccard không phân biệt khái niệm "quan trọng" vs "phụ"
+- Có thể weight concepts by frequency/importance
+- Có thể dùng semantic similarity thay vì exact match
+
+6.3. VỀ CYCLES
+--------------
+- Cycle trong đồ thị tiên quyết là vô lý
+- maximum_spanning_tree có thể loại bỏ edges quan trọng
+- Nên analyze cycles trước khi loại bỏ
+
+================================================================================
+7. TÓM TẮT
+================================================================================
+
+Step 4 XÂY DỰNG ĐỒ THỊ TRI THỨC với các đặc điểm:
+
+1. ĐẦU VÀO:
+   - 11,385 user sequences
+   - 887 course concept mappings
+
+2. XỬ LÝ CHÍNH:
+   - Tính course transitions (temporal)
+   - Tính Jaccard similarity (concept overlap)
+   - Kết hợp: weight = 0.6×overlap + 0.4×temporal
+   - Filter weight > 0.4
+
+3. KẾT QUẢ:
+   - 887 nodes (courses)
+   - 3,407 edges (transitions)
+   - Density = 0.0043
+   - Top prerequisite: C_769293 (61 successors)
+
+4. CÔNG THỨC:
+   - Jaccard = |A∩B| / |A∪B|
+   - temporal_prob = count(A trước B) / count(A và B cùng)
+   - weight = 0.6 × Jaccard + 0.4 × temporal_prob
+
+5. OUTPUT FILES:
+   - knowledge_graph.gml
+   - knowledge_graph.pkl
+   - knowledge_graph_edges.csv
+   - knowledge_graph_final.png
+
+6. ỨNG DỤNG:
+   - Tìm lộ trình học tối ưu
+   - Gợi ý course tiếp theo
+   - Phân tích cấu trúc curriculum
+   - Visualize relationships
+
+================================================================================
+HẾT GIẢI THÍCH STEP 4
+================================================================================
+
+File được tạo bởi: Assistant
+Ngày: 2026-05-01
+Ngôn ngữ: Tiếng Việt

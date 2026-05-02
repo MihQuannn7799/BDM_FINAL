@@ -1,0 +1,874 @@
+================================================================================
+STEP 5: KHAI PHÁ MẪU TUẦN TỰ VỚI THUẬT TOÁN APRIORI - GIẢI THÍCH CHI TIẾT
+================================================================================
+
+DỰ ÁN: MOOCCubeX - Hệ thống học tập thích ứng trong MOOCs
+FILE: step5_fp_growth_mining.ipynb
+VỊ TRÍ: scripts/notebooks/step5_fp_growth_mining.ipynb
+
+================================================================================
+1. TỔNG QUAN VÀ MỤC ĐÍCH
+================================================================================
+
+Step 5 thực hiện KHAI PHÁ MẪU TUẦN TỰ (Sequential Pattern Mining) sử dụng
+thuật toán APRIORI để tìm các luật kết hợp (association rules) với ràng
+buộc về thời gian, phục vụ cho việc giải thích gợi ý.
+
+MỤC TIÊU CHÍNH:
+- Xây dựng cơ sở dữ liệu giao dịch từ chuỗi người dùng
+- Khai phá tập itemset thường xuyên (frequent itemsets) với Apriori
+- Sinh luật kết hợp (association rules) với confidence, lift, support
+- Làm giàu luật với thông tin khái niệm (concept)
+
+INPUT (ĐẦU VÀO):
+- user_sequences.json: Chuỗi khóa học từ Step 2
+- course_concepts.json: Ánh xạ khóa học → khái niệm
+
+OUTPUT (ĐẦU RA):
+- association_rules.json: Các luật {antecedent → consequent}
+- association_rules.pkl: Định dạng pickle cho Python
+
+TẠI SAO CẦN STEP 5?
+-------------------
+Các steps trước đã tạo:
+- Step 1-2: R_score và sequences
+- Step 3-4: Tiên quyết và đồ thị tri thức
+
+Step 5 bổ sung khả năng GIẢI THÍCH cho gợi ý:
+- "Gợi ý course B vì người học course A thường học B"
+- "70% người học C_629559 cũng học C_674903"
+- "Học C_A trước C_B tăng khả năng thành công lên 2x"
+
+ỨNG DỤNG:
+- Gợi ý có giải thích (explainable recommendation)
+- Phát hiện mẫu học tập phổ biến
+- Xây dựng curriculum dựa trên data
+
+================================================================================
+2. KHÁI NIỆM VÀ CÔNG THỨC CHÍNH
+================================================================================
+
+2.1. CÁC KHÁI NIỆM CƠ BẢN
+-------------------------
+
+a) Transaction (Giao dịch):
+   - Một tập hợp các courses mà một user đã học
+   - Sắp xếp theo thứ tự thời gian
+   - Ví dụ: [C_696908, C_1756060, C_682129]
+
+b) Itemset (Tập mục):
+   - Tập hợp các courses (items)
+   - k-itemset: itemset có k courses
+   - Ví dụ: (C_A, C_B) là 2-itemset
+
+c) Frequent Itemset (Tập mục thường xuyên):
+   - Itemset xuất hiện thường xuyên trong data
+   - "Thường xuyên" = support >= threshold
+
+d) Association Rule (Luật kết hợp):
+   - Dạng: A → B (nếu A thì B)
+   - A: antecedent (tiền đề)
+   - B: consequent (hệ quả)
+   - Ví dụ: {C_A} → {C_B, C_C}
+
+2.2. CÁC METRICS ĐÁNH GIÁ
+-------------------------
+
+a) SUPPORT (Độ hỗ trợ):
+   Công thức:
+       support(A) = count(A) / total_transactions
+
+   support(A → B):
+       = count(A ∪ B) / total_transactions
+
+   Ý nghĩa:
+   - Tỷ lệ giao dịch chứa cả A và B
+   - support cao = rule phổ biến trong data
+   - support thấp = rule hiếm, có thể bỏ qua
+
+   VÍ DỤ:
+   - 11,385 transactions
+   - 150 transactions chứa cả C_A và C_B
+   - support(C_A → C_B) = 150/11385 = 0.0132 (1.32%)
+
+b) CONFIDENCE (Độ tin cậy):
+   Công thức:
+       confidence(A → B) = support(A ∪ B) / support(A)
+                         = count(A ∪ B) / count(A)
+
+   Ý nghĩa:
+   - Tỷ lệ giao dịch chứa B TRONG SỐ giao dịch chứa A
+   - confidence cao = A dự đoán B tốt
+   - Là xác suất có điều kiện: P(B | A)
+
+   VÍ DỤ:
+   - 200 transactions chứa C_A
+   - 150 transactions chứa cả C_A và C_B
+   - confidence(C_A → C_B) = 150/200 = 0.75 (75%)
+   → 75% người học C_A cũng học C_B
+
+c) LIFT (Độ nâng):
+   Công thức:
+       lift(A → B) = confidence(A → B) / support(B)
+                   = support(A ∪ B) / (support(A) × support(B))
+
+   Ý nghĩa:
+   - Đo mức độ PHỤ THUỘC giữa A và B
+   - lift = 1: A và B độc lập (không liên quan)
+   - lift > 1: A và B tương quan dương (có liên quan)
+   - lift < 1: A và B tương quan âm (tránh nhau)
+
+   VÍ DỤ:
+   - support(C_A) = 0.02 (2%)
+   - support(C_B) = 0.03 (3%)
+   - support(C_A ∪ C_B) = 0.015 (1.5%)
+   - confidence(C_A → C_B) = 0.015/0.02 = 0.75
+   - lift(C_A → C_B) = 0.75/0.03 = 25
+
+   → lift = 25: Người học C_A có khả năng học C_B CAO GẤP 25 LẦN
+      so với ngẫu nhiên
+
+   DIỄN GIẢI LIFT:
+   - lift = 2: B xuất hiện gấp 2 lần khi có A
+   - lift = 10: B xuất hiện gấp 10 lần khi có A
+   - lift = 37.677: B xuất hiện gấp 37.7 lần khi có A → Mối quan hệ RẤT MẠNH
+
+2.3. VÍ DỤ TÍNH TOÁN ĐẦY ĐỦ
+---------------------------
+
+Giả sử có 100 transactions:
+- 20 transactions chứa C_A
+- 15 transactions chứa C_B
+- 10 transactions chứa cả C_A và C_B
+
+Tính toán:
+- support(C_A) = 20/100 = 0.20
+- support(C_B) = 15/100 = 0.15
+- support(C_A ∪ C_B) = 10/100 = 0.10
+
+- confidence(C_A → C_B) = 0.10/0.20 = 0.50 (50%)
+- lift(C_A → C_B) = 0.50/0.15 = 3.33
+
+DIỄN GIẢI:
+- 50% người học C_A cũng học C_B
+- Khả năng học C_B khi đã học C_A CAO GẤP 3.33 lần so với ngẫu nhiên
+
+================================================================================
+3. THUẬT TOÁN APRIORI - GIẢI THÍCH CHI TIẾT
+================================================================================
+
+3.1. Ý TƯỞNG CHÍNH
+------------------
+
+APRIORI là thuật toán kinh điển để khai phá frequent itemsets.
+
+NGUYÊN LÝ APRIORI:
+- Nếu một itemset là frequent → TẤT CẢ subsets của nó cũng frequent
+- Nếu một itemset KHÔNG frequent → TẤT CẢ supersets của nó cũng không frequent
+
+VÍ DỤ:
+- Nếu {C_A, C_B, C_C} frequent → {C_A}, {C_B}, {C_C}, {C_A,C_B}, {C_A,C_C}, {C_B,C_C} đều frequent
+- Nếu {C_A} không frequent → {C_A, C_B}, {C_A, C_C}, {C_A, C_B, C_C} đều không frequent
+
+TẠI SAO NGUYÊN LÝ NÀY QUAN TRỌNG?
+- Giúp PRUNE (cắt tỉa) không gian tìm kiếm
+- Không cần kiểm tra tất cả 2^n itemsets
+- Chỉ xét candidates có thể frequent
+
+3.2. CÁC BƯỚC CỦA APRIORI
+-------------------------
+
+Bước 1: Tìm frequent 1-itemsets
+    - Đếm support của từng item đơn lẻ
+    - Filter: support >= min_support
+
+Bước 2: Sinh candidates từ frequent itemsets
+    - Join: Kết hợp 2 frequent (k-1)-itemsets thành k-itemset
+    - Điều kiện: 2 itemsets phải giống nhau ở k-2 items đầu
+
+Bước 3: Prune candidates
+    - Loại candidates có subset không frequent
+    - Dựa vào nguyên lý Apriori
+
+Bước 4: Đếm support của candidates
+    - Duyệt qua transactions
+    - Tăng count cho candidate nếu transaction chứa nó
+
+Bước 5: Filter frequent k-itemsets
+    - Giữ lại candidates có support >= min_support
+
+Bước 6: Lặp từ Bước 2-5
+    - Cho đến khi không còn frequent itemsets
+
+3.3. VÍ DỤ MINH HỌA
+-------------------
+
+Giả sử có 5 transactions:
+1. {A, B, C}
+2. {A, C}
+3. {A, D}
+4. {B, C}
+5. {A, B, C, D}
+
+min_support = 3 (60%)
+
+BƯỚC 1: Frequent 1-itemsets
+    A: 4 lần (transactions 1,2,3,5) → frequent
+    B: 3 lần (transactions 1,4,5) → frequent
+    C: 4 lần (transactions 1,2,4,5) → frequent
+    D: 2 lần (transactions 3,5) → NOT frequent
+
+    L1 = {A:4, B:3, C:4}
+
+BƯỚC 2: Candidates 2-itemsets
+    Từ L1, tạo candidates:
+    {A,B}, {A,C}, {B,C}
+
+BƯỚC 3: Prune
+    Kiểm tra subsets (tất cả đều là 1-itemsets đã frequent)
+    → Không prune gì cả
+
+BƯỚC 4: Đếm support
+    {A,B}: 2 lần (transactions 1,5)
+    {A,C}: 3 lần (transactions 1,2,5)
+    {B,C}: 3 lần (transactions 1,4,5)
+
+BƯỚC 5: Filter
+    {A,B}: 2 < 3 → NOT frequent
+    {A,C}: 3 >= 3 → frequent
+    {B,C}: 3 >= 3 → frequent
+
+    L2 = {{A,C}:3, {B,C}:3}
+
+BƯỚC 6: Candidates 3-itemsets
+    Từ {A,C} và {B,C}:
+    - Join: {A,B,C}
+    - Prune: Kiểm tra subsets {A,B}, {A,C}, {B,C}
+      + {A,B} không frequent → PRUNE {A,B,C}
+
+    → Không còn candidates → DỪNG
+
+KẾT QUẢ: Frequent itemsets = {A:4, B:3, C:4, {A,C}:3, {B,C}:3}
+
+================================================================================
+4. GIẢI THÍCH TỪNG BƯỚC CODE - TẠI SAO LẠI LÀM NHƯ VẬY?
+================================================================================
+
+BƯỚC 5.1: KHỞI TẠO VÀ CẤU HÌNH
+------------------------------
+Code:
+    import json
+    import pickle
+    from collections import defaultdict, Counter
+    from itertools import combinations, chain
+    import pandas as pd
+
+    MIN_SUPPORT = 0.01      # 1%
+    MIN_CONFIDENCE = 0.5    # 50%
+    MIN_LIFT = 1.2
+    MAX_ITEMSET_SIZE = 4
+
+TẠI SAO CÁC THAM SỐ NÀY?
+
+a) MIN_SUPPORT = 0.01 (1%):
+   - Ngưỡng tối thiểu để coi là "thường xuyên"
+   - 1% = khoảng 114 transactions trong 11,385
+   - Thấp để giữ lại nhiều patterns
+   - Có thể tăng lên 0.02-0.05 nếu muốn patterns mạnh hơn
+
+b) MIN_CONFIDENCE = 0.5 (50%):
+   - Rule phải đúng ít nhất 50% thời gian
+   - Nếu confidence < 50% → rule không đáng tin
+   - Có thể tăng lên 0.6-0.7 nếu muốn rules chắc chắn hơn
+
+c) MIN_LIFT = 1.2:
+   - lift > 1.2: mối quan hệ mạnh hơn ngẫu nhiên 20%
+   - Loại bỏ các rules có lift gần 1 (độc lập)
+   - Có thể tăng lên 1.5-2.0 nếu muốn rules mạnh hơn
+
+d) MAX_ITEMSET_SIZE = 4:
+   - Giới hạn kích thước itemset
+   - Itemset lớn hơn 4 items → khó diễn giải
+   - Giảm thời gian tính toán
+
+BƯỚC 5.2: LOAD DỮ LIỆU
+----------------------
+Code:
+    with open(f"{OUTPUT_PATH}/user_sequences.json", "r") as f:
+        user_sequences = json.load(f)
+
+    with open(f"{OUTPUT_PATH}/course_concepts.json", "r") as f:
+        course_concepts = json.load(f)
+
+KẾT QUẢ:
+- 11,385 user sequences
+- 887 course concept mappings
+
+BƯỚC 5.3: XÂY DỰNG TRANSACTION DATABASE
+---------------------------------------
+Code:
+    transactions = []
+
+    for record in user_sequences:
+        user_id = record["user_id"]
+        sequence = record["sequence"]
+        sequence = sorted(sequence, key=lambda x: x[0])
+
+        courses = [item[1] for item in sequence if item[2] >= 0.3]
+
+        if len(courses) >= 2:
+            transactions.append(courses)
+
+TẠI SAO SORT SEQUENCE?
+- Đảm bảo thứ tự thời gian đúng
+- sequence từ Step 2 có thể chưa sorted
+- Sort theo sequence_order (item[0])
+
+TẠI SAO FILTER R_score >= 0.3?
+- Chỉ giữ courses mà user "thực sự học" (R_score >= 0.3)
+- Loại bỏ courses user ghi danh nhưng không học
+- R_score thấp (< 0.3) → user xem rất ít video
+
+TẠI SAO len(courses) >= 2?
+- Cần ít nhất 2 courses để tạo association rule
+- 1 course → không có rule nào sinh ra
+- Giảm transactions vô ích
+
+KẾT QUẢ: 11,385 transactions
+
+BƯỚC 5.4: HÀM GET_ITEM_SUPPORT
+------------------------------
+Code:
+    def get_item_support(transactions, min_support_count):
+        item_counts = Counter()
+        for items in transactions:
+            for item in items:
+                item_counts[item] += 1
+
+        frequent_items = {item: count for item, count in item_counts.items()
+                         if count >= min_support_count}
+        return frequent_items
+
+CHỨC NĂNG:
+- Đếm số lần xuất hiện của từng item
+- Filter theo min_support_count
+
+TẠI SAO DÙNG Counter?
+- Counter là dictionary tối ưu cho counting
+- Tự động khởi tạo giá trị = 0
+- Nhanh hơn defaultdict khi chỉ cần đếm
+
+BƯỚC 5.5: HÀM CREATE_CANDIDATES
+-------------------------------
+Code:
+    def create_candidates(prev_itemsets, k):
+        candidates = set()
+        prev_list = list(prev_itemsets)
+
+        for i in range(len(prev_list)):
+            for j in range(i + 1, len(prev_list)):
+                itemset1 = list(prev_list[i])
+                itemset2 = list(prev_list[j])
+
+                if itemset1[:k-2] == itemset2[:k-2]:
+                    new_itemset = tuple(sorted(set(itemset1) | set(itemset2)))
+                    if len(new_itemset) == k:
+                        candidates.add(new_itemset)
+
+        return candidates
+
+GIẢI THÍCH:
+
+a) JOIN 2 ITEMSETS:
+   - Chỉ join nếu k-2 items đầu GIỐNG NHAU
+   - Ví dụ với k=3:
+     + {A,B} và {A,C} → join được (cùng A)
+     + {A,B} và {C,D} → không join được (khác nhau)
+
+b) TẠO NEW ITEMSET:
+   - Union: itemset1 ∪ itemset2
+   - Sort: đảm bảo thứ tự nhất quán
+   - Tuple: hashable để lưu vào set
+
+VÍ DỤ:
+k = 3, prev_itemsets = {{A,B}, {A,C}, {A,D}, {B,C}}
+
+Join {A,B} và {A,C}:
+- k-2 = 1, so sánh 1 item đầu: A == A ✓
+- Union: {A,B} ∪ {A,C} = {A,B,C}
+- len = 3 = k ✓
+- → Candidate: {A,B,C}
+
+Join {A,B} và {B,C}:
+- k-2 = 1, so sánh: A != B ✗
+- → Không join
+
+BƯỚC 5.6: HÀM PRUNE_CANDIDATES
+------------------------------
+Code:
+    def prune_candidates(candidates, prev_frequent, k):
+        pruned = set()
+        for candidate in candidates:
+            subsets = list(combinations(candidate, k-1))
+            if all(subset in prev_frequent for subset in subsets):
+                pruned.add(candidate)
+        return pruned
+
+CHỨC NĂNG:
+- Kiểm tra TẤT CẢ (k-1)-subsets của candidate
+- Nếu TẤT CẢ đều frequent → giữ lại
+- Nếu CÓ MỘT subset không frequent → loại bỏ
+
+TẠI SAO PRUNE?
+- Dựa vào nguyên lý APRIORI
+- Nếu {A,B,C} frequent → {A,B}, {A,C}, {B,C} phải frequent
+- Nếu {A,B} không frequent → {A,B,C} chắc chắn không frequent
+- Prune giúp giảm candidates cần đếm support
+
+VÍ DỤ:
+candidate = {A,B,C}, k = 3
+
+Subsets (2-itemsets):
+- {A,B}, {A,C}, {B,C}
+
+Kiểm tra:
+- Nếu {A,B} ∈ prev_frequent, {A,C} ∈ prev_frequent, {B,C} ∈ prev_frequent
+  → Giữ {A,B,C}
+- Nếu {A,B} ∉ prev_frequent
+  → Loại {A,B,C}
+
+BƯỚC 5.7: HÀM COUNT_SUPPORT
+---------------------------
+Code:
+    def count_support(transactions, candidates):
+        candidate_counts = defaultdict(int)
+
+        for items in transactions:
+            item_set = set(items)
+            for candidate in candidates:
+                if set(candidate).issubset(item_set):
+                    candidate_counts[candidate] += 1
+
+        return candidate_counts
+
+CHỨC NĂNG:
+- Đếm số transactions chứa MỖI candidate
+- Dùng issubset() để kiểm tra
+
+TẠI SAO DÙNG issubset()?
+- candidate = (A,B,C) → set(candidate) = {A,B,C}
+- items = [A,B,C,D] → item_set = {A,B,C,D}
+- {A,B,C} ⊆ {A,B,C,D} → True → tăng count
+
+ĐỘ PHỨC TẠP:
+- O(n × m × k) với:
+  + n = số transactions
+  + m = số candidates
+  + k = kích thước candidate
+- Có thể chậm với data lớn → cần optimization
+
+BƯỚC 5.8: HÀM GET_FREQUENT_ITEMSETS
+-----------------------------------
+Code:
+    def get_frequent_itemsets(transactions, min_support_count, max_size=3):
+        all_frequent_itemsets = {}
+
+        # Frequent 1-itemsets
+        frequent_items = get_item_support(transactions, min_support_count)
+        frequent_1_itemsets = {(item,): count for item, count in frequent_items.items()}
+
+        all_frequent_itemsets[1] = frequent_1_itemsets
+        print(f"Frequent 1-itemsets: {len(frequent_1_itemsets)}")
+
+        prev_frequent = set(frequent_1_itemsets.keys())
+
+        # Generate larger itemsets
+        for k in range(2, max_size + 1):
+            if len(prev_frequent) < 2:
+                break
+
+            candidates = create_candidates(prev_frequent, k)
+            candidates = prune_candidates(candidates, prev_frequent, k)
+
+            if not candidates:
+                break
+
+            candidate_counts = count_support(transactions, candidates)
+            frequent_k = {itemset: count for itemset, count in candidate_counts.items()
+                          if count >= min_support_count}
+
+            if frequent_k:
+                all_frequent_itemsets[k] = frequent_k
+                prev_frequent = set(frequent_k.keys())
+                print(f"Frequent {k}-itemsets: {len(frequent_k)}")
+            else:
+                break
+
+        return all_frequent_itemsets
+
+LUỒNG XỬ LÝ:
+
+1. Tìm frequent 1-itemsets:
+   - Đếm support từng item
+   - Filter theo min_support
+
+2. Lặp với k = 2, 3, ..., max_size:
+   a) Create candidates từ prev_frequent
+   b) Prune candidates
+   c) Count support
+   d) Filter frequent k-itemsets
+   e) Cập nhật prev_frequent
+
+3. Dừng khi:
+   - Không còn candidates
+   - Không còn frequent itemsets
+   - Đạt max_size
+
+KẾT QUẢ:
+    Minimum support count: 113 (từ 11,385 transactions)
+    Frequent 1-itemsets: 158
+    Frequent 2-itemsets: 204
+    Frequent 3-itemsets: 83
+    Frequent 4-itemsets: 21
+
+    Total frequent itemsets: 466
+
+NHẬN XÉT:
+- 158 courses xuất hiện >= 113 lần (1%)
+- 204 cặp courses xuất hiện >= 113 lần cùng nhau
+- 83 bộ 3 courses xuất hiện >= 113 lần
+- 21 bộ 4 courses xuất hiện >= 113 lần
+
+BƯỚC 5.9: SINH ASSOCIATION RULES
+--------------------------------
+Code:
+    def generate_association_rules(frequent_itemsets, min_confidence, min_lift, total_transactions):
+        rules = []
+        all_itemsets = {}
+        for size, itemsets in frequent_itemsets.items():
+            all_itemsets.update(itemsets)
+
+        for itemset, support_count in all_itemsets.items():
+            if len(itemset) < 2:
+                continue
+
+            for i in range(1, len(itemset)):
+                for antecedent in combinations(itemset, i):
+                    antecedent = tuple(sorted(antecedent))
+                    consequent = tuple(sorted(set(itemset) - set(antecedent)))
+
+                    if not consequent:
+                        continue
+
+                    itemset_support = support_count / total_transactions
+                    antecedent_support = all_itemsets.get(antecedent, 0) / total_transactions
+                    consequent_support = all_itemsets.get(consequent, 0) / total_transactions
+
+                    if antecedent_support == 0:
+                        continue
+
+                    confidence = itemset_support / antecedent_support
+
+                    if consequent_support == 0:
+                        continue
+
+                    lift = confidence / consequent_support
+
+                    if confidence >= min_confidence and lift >= min_lift:
+                        rules.append({
+                            'antecedent': list(antecedent),
+                            'consequent': list(consequent),
+                            'confidence': confidence,
+                            'lift': lift,
+                            'support': itemset_support,
+                            'antecedent_support': antecedent_support,
+                            'consequent_support': consequent_support
+                        })
+
+        return rules
+
+CÁCH SINH RULES:
+
+1. Duyệt qua TẤT CẢ frequent itemsets (size >= 2)
+
+2. Với mỗi itemset, thử TẤT CẢ cách chia antecedent/consequent:
+   - itemset = {A,B,C}
+   - Có thể chia:
+     + {A} → {B,C}
+     + {B} → {A,C}
+     + {C} → {A,B}
+     + {A,B} → {C}
+     + {A,C} → {B}
+     + {B,C} → {A}
+
+3. Tính metrics:
+   - support, confidence, lift
+
+4. Filter:
+   - confidence >= MIN_CONFIDENCE (0.5)
+   - lift >= MIN_LIFT (1.2)
+
+VÍ DỤ:
+itemset = {A,B}, support_count = 150
+all_itemsets[{A}] = 200, all_itemsets[{B}] = 100
+total = 11,385
+
+Rule: {A} → {B}
+- support = 150/11385 = 0.0132
+- confidence = 0.0132 / (200/11385) = 150/200 = 0.75
+- lift = 0.75 / (100/11385) = 0.75/0.0088 = 85.2
+
+KẾT QUẢ: 327 association rules
+
+TOP 10 RULES BY LIFT:
+    C_682330 → C_682345
+      confidence=0.867, lift=37.677, support=0.013
+
+    C_697381 → C_707119
+      confidence=0.672, lift=31.998, support=0.012
+
+    ...
+
+DIỄN GIẢI:
+- lift = 37.677: Người học C_682330 có khả năng học C_682345
+  CAO GẤP 37.7 lần so với ngẫu nhiên
+- confidence = 0.867: 86.7% người học C_682330 cũng học C_682345
+- support = 0.013: 1.3% transactions chứa cả 2 courses
+
+BƯỚC 5.10: LÀM GIÀU RULES VỚI CONCEPT INFO
+------------------------------------------
+Code:
+    def jaccard_similarity(set_a, set_b):
+        if not set_a or not set_b:
+            return 0.0
+        intersection = len(set(set_a) & set(set_b))
+        union = len(set(set_a) | set(set_b))
+        return intersection / union if union > 0 else 0.0
+
+    def get_concept_info(antecedent, consequent):
+        antecedent_concepts = set()
+        for c in antecedent_courses:
+            antecedent_concepts.update(course_concepts.get(c, []))
+
+        consequent_concepts = set()
+        for c in consequent_courses:
+            consequent_concepts.update(course_concepts.get(c, []))
+
+        overlap = jaccard_similarity(antecedent_concepts, consequent_concepts)
+        new_concepts = consequent_concepts - antecedent_concepts
+        prereq_concepts = antecedent_concepts & consequent_concepts
+
+        return {
+            "concept_overlap_ratio": overlap,
+            "prerequisite_concepts": list(prereq_concepts),
+            "num_prereq_concepts": len(prereq_concepts),
+            "new_concepts_introduced": list(new_concepts),
+            "num_new_concepts": len(new_concepts)
+        }
+
+TẠI SAO LÀM GIÀU VỚI CONCEPT?
+- Giúp GIẢI THÍCH rule tốt hơn
+- "Học A trước B vì chúng chia sẻ khái niệm X, Y"
+- "B giới thiệu khái niệm mới Z so với A"
+
+CÁC METRICS THÊM VÀO:
+
+a) concept_overlap_ratio:
+   - Jaccard similarity giữa concepts của antecedent và consequent
+   - overlap cao → 2 courses có nhiều khái niệm chung
+   - Có thể là tiên quyết hoặc bổ sung
+
+b) prerequisite_concepts:
+   - Concepts CHUNG giữa antecedent và consequent
+   - Là kiến thức nền cần có
+
+c) new_concepts_introduced:
+   - Concepts chỉ có trong consequent
+   - Là kiến thức MỚI mà consequent mang lại
+
+VÍ DỤ:
+Rule: C_682330 → C_682345
+- concept_overlap_ratio = 0.057 (5.7%)
+- num_new_concepts = 682
+
+DIỄN GIẢI:
+- 2 courses chỉ chia sẻ 5.7% concepts
+- C_682345 giới thiệu 682 concepts mới so với C_682330
+- → C_682345 là course NÂNG CAO, mở rộng từ C_682330
+
+KẾT QUẢ: 327 enriched rules
+
+TOP 10 ENRICHED RULES:
+    C_682330 → C_682345
+      confidence=0.867, lift=37.677, overlap=0.057
+      new_concepts=682
+
+    C_697381 → C_707119
+      confidence=0.672, lift=31.998, overlap=0.227
+      new_concepts=414
+
+    ...
+
+THỐNG KÊ:
+    Total rules: 327
+    Avg confidence: 0.689 (68.9%)
+    Avg lift: 6.889
+    Avg concept overlap: 0.195 (19.5%)
+
+DIỄN GIẢI:
+- Avg confidence 68.9%: Rules khá tin cậy
+- Avg lift 6.889: Mối quan hệ mạnh gấp 6.9 lần ngẫu nhiên
+- Avg overlap 19.5%: Courses chia sẻ ~20% concepts
+
+BƯỚC 5.11: LƯU KẾT QUẢ
+----------------------
+Code:
+    with open(f"{OUTPUT_PATH}/association_rules.json", "w") as f:
+        json.dump(enriched_rules, f, indent=2)
+
+    with open(f"{OUTPUT_PATH}/association_rules.pkl", "wb") as f:
+        pickle.dump(enriched_rules, f)
+
+OUTPUT FILES:
+- association_rules.json: Text format, dễ đọc
+- association_rules.pkl: Binary, load nhanh trong Python
+
+================================================================================
+6. ỨNG DỤNG CỦA ASSOCIATION RULES
+================================================================================
+
+6.1. GỢI Ý CÓ GIẢI THÍCH
+------------------------
+
+Rule: C_A → C_B với confidence=0.75, lift=10
+
+User hỏi: "Tại sao gợi ý C_B cho tôi?"
+Trả lời: "Vì bạn đã học C_A, và 75% người học C_A cũng học C_B.
+         Khả năng học C_B của bạn CAO GẤP 10 lần so với ngẫu nhiên."
+
+6.2. PHÁT HIỆN MẪU HỌC TẬP
+--------------------------
+
+Top rules cho biết:
+- Courses nào thường được học cùng nhau
+- Lộ trình học phổ biến
+- Courses bổ trợ cho nhau
+
+6.3. XÂY DỰNG CURRICULUM
+------------------------
+
+Dựa vào rules:
+- Sắp xếp courses theo thứ tự hợp lý
+- Đảm bảo prerequisites được học trước
+- Tối ưu hóa lộ trình học
+
+6.4. CẢNH BÁO SỚM
+-----------------
+
+Rules với confidence thấp:
+- "Chỉ 30% người học C_A vượt qua C_B"
+- → C_B có thể quá khó sau C_A
+- → Cần điều chỉnh curriculum hoặc hỗ trợ thêm
+
+================================================================================
+7. SO SÁNH VỚI CÁC STEPS TRƯỚC
+================================================================================
+
++------------------+------------------+------------------+
+| YẾU TỐ           | STEP 3           | STEP 4           | STEP 5           |
++------------------+------------------+------------------+------------------+
+| Phương pháp      | Pass/Fail        | Graph-based      | Association    |
+|                  | probability      | (concept+time)   | Rules (Apriori)|
++------------------+------------------+------------------+------------------+
+| Output           | Prereq pairs     | Knowledge Graph  | Rules          |
+|                  | (A→B)            | (nodes+edges)    | (A→B + metrics)|
++------------------+------------------+------------------+------------------+
+| Metrics          | P_success        | weight           | conf, lift,    |
+|                  |                  |                  | support        |
++------------------+------------------+------------------+------------------+
+| Giải thích       | Yếu              | Trung bình       | Mạnh           |
++------------------+------------------+------------------+------------------+
+
+ĐIỂM MẠNH CỦA STEP 5:
+- Có metrics rõ ràng (confidence, lift, support)
+- Dễ diễn giải cho người dùng
+- Phát hiện patterns phức tạp (3-4 items)
+
+ĐIỂM YẾU CỦA STEP 5:
+- Không xét thứ tự thời gian chi tiết
+- Chỉ xét đồng xuất hiện, không xét sequence
+
+================================================================================
+8. HẠN CHẾ VÀ LƯU Ý
+================================================================================
+
+8.1. VỀ THAM SỐ
+---------------
+- MIN_SUPPORT, MIN_CONFIDENCE, MIN_LIFT là arbitrary
+- Cần tuning dựa trên data và application
+- Có thể dùng cross-validation để chọn tham số tốt
+
+8.2. VỀ ĐỘ PHỨC TẠP
+-------------------
+- Apriori có độ phức tạp cao với data lớn
+- MAX_ITEMSET_SIZE = 4 giúp giảm thời gian
+- Có thể dùng FP-Growth (nhanh hơn) nếu cần
+
+8.3. VỀ TEMPORAL CONSTRAINT
+---------------------------
+- Step 5 không xét thứ tự thời gian CHI TIẾT
+- Chỉ biết A và B cùng xuất hiện
+- Không biết A học TRƯỚC B hay ngược lại
+- Có thể cải thiện bằng Sequential Pattern Mining thật sự
+
+================================================================================
+9. TÓM TẮT
+================================================================================
+
+Step 5 KHAI PHÁ MẪU TUẦN TỰ VỚI APRIORI với các đặc điểm:
+
+1. ĐẦU VÀO:
+   - 11,385 user sequences
+   - 887 course concept mappings
+
+2. XỬ LÝ CHÍNH:
+   - Build transaction database (filter R_score >= 0.3)
+   - Apriori algorithm: tìm frequent itemsets
+   - Generate association rules
+   - Enrich với concept information
+
+3. THAM SỐ:
+   - MIN_SUPPORT = 0.01 (1%)
+   - MIN_CONFIDENCE = 0.5 (50%)
+   - MIN_LIFT = 1.2
+   - MAX_ITEMSET_SIZE = 4
+
+4. KẾT QUẢ:
+   - Frequent 1-itemsets: 158
+   - Frequent 2-itemsets: 204
+   - Frequent 3-itemsets: 83
+   - Frequent 4-itemsets: 21
+   - Association rules: 327
+
+5. METRICS:
+   - support(A): Tỷ lệ transactions chứa A
+   - confidence(A→B): P(B|A) = support(A∪B)/support(A)
+   - lift(A→B): confidence(A→B)/support(B)
+   - concept_overlap: Jaccard similarity
+
+6. OUTPUT FILES:
+   - association_rules.json
+   - association_rules.pkl
+
+7. ỨNG DỤNG:
+   - Gợi ý có giải thích (explainable recommendation)
+   - Phát hiện mẫu học tập phổ biến
+   - Xây dựng curriculum
+
+================================================================================
+HẾT GIẢI THÍCH STEP 5
+================================================================================
+
+File được tạo bởi: Assistant
+Ngày: 2026-05-01
+Ngôn ngữ: Tiếng Việt

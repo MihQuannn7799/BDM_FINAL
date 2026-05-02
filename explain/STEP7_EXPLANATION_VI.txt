@@ -1,0 +1,904 @@
+================================================================================
+STEP 7: GỢI Ý HYBRID VÀ ĐÁNH GIÁ - GIẢI THÍCH CHI TIẾT
+================================================================================
+
+DỰ ÁN: MOOCCubeX - Hệ thống học tập thích ứng trong MOOCs
+FILE: step7_hybrid_recommendation_evaluation.ipynb
+VỊ TRÍ: scripts/notebooks/step7_hybrid_recommendation_evaluation.ipynb
+
+================================================================================
+1. TỔNG QUAN VÀ MỤC ĐÍCH
+================================================================================
+
+Step 7 là bước CUỐI CÙNG trong pipeline, tổng hợp tất cả các components từ
+các steps trước để tạo ra hệ thống gợi ý HYBRID (lai ghép) có khả năng
+GIẢI THÍCH (explainable).
+
+MỤC TIÊU CHÍNH:
+- Kết hợp nhiều nguồn thông tin: ALS, Association Rules, R_score, Readiness
+- Tính toán điểm số hybrid cho mỗi khuyến nghị
+- Tạo ra các giải thích (explanations) cho khuyến nghị
+- Đánh giá chất lượng hệ thống với các metrics
+
+INPUT (ĐẦU VÀO):
+- user_sequences.json: Chuỗi khóa học từ Step 2
+- course_concepts.json: Ánh xạ course → concepts
+- course_prerequisites.pkl: Tiên quyết từ Step 3
+- association_rules.pkl: Luật kết hợp từ Step 5
+- als_embeddings.pkl: Embeddings từ Step 6
+- R_matrix: Ma trận R(u,c) từ Step 1
+
+OUTPUT (ĐẦU RA):
+- final_recommendations.pkl: Khuyến nghị cuối cùng + explanations
+- final_recommendations.json: Định dạng JSON
+- Evaluation metrics: Precision, Coverage, Explanation quality
+
+TẠI SAO CẦN STEP 7?
+-------------------
+Các steps trước đã tạo ra các components riêng lẻ:
+- Step 1-2: R_score (relevance score)
+- Step 3: Prerequisites (tiên quyết)
+- Step 4: Knowledge Graph (đồ thị tri thức)
+- Step 5: Association Rules (luật kết hợp)
+- Step 6: ALS Embeddings (collaborative filtering)
+
+Step 7 TỔ HỢP tất cả thành một hệ thống gợi ý HOÀN CHỈNH:
+- Hybrid scoring: kết hợp nhiều signals
+- Explainable: giải thích TẠI SAO gợi ý course này
+- Evaluated: có metrics đánh giá chất lượng
+
+ỨNG DỤNG:
+- Gợi ý khóa học với giải thích
+- Hệ thống recommendation production-ready
+- Đánh giá và so sánh các components
+
+================================================================================
+2. CÔNG THỨC VÀ LOGIC CHÍNH
+================================================================================
+
+2.1. CÔNG THỨC HYBRID SCORING
+-----------------------------
+
+Final Score Formula:
+
+    final_score(c) = 0.35·ALS_score + 0.25·rule_confidence + 0.20·R_score + 0.20·readiness
+
+Trong đó:
+- ALS_score (35%): Điểm từ collaborative filtering (Step 6)
+- rule_confidence (25%): Confidence từ association rules (Step 5)
+- R_score (20%): Relevance score từ Step 1-2
+- readiness (20%): Độ sẵn sàng học course (tính mới)
+
+TẠI SAO CÁC TRỌNG SỐ NÀY?
+- ALS (35%): Quan trọng nhất vì học được patterns latent từ data
+- Rules (25%): Quan trọng thứ 2 vì cho biết patterns phổ biến
+- R_score (20%): Cơ bản, đã được tính kỹ ở Step 1-2
+- Readiness (20%): Mới, đo mức độ chuẩn bị của user
+
+SOFT CONSTRAINT (RÀNG BUỘC MỀM):
+    if readiness < 0.5:
+        final_score *= 0.7
+
+Ý nghĩa:
+- Nếu user chưa sẵn sàng (readiness < 0.5) → giảm score 30%
+- "Penalty" cho courses quá khó với user
+- Khuyến khích gợi ý courses phù hợp với trình độ
+
+2.2. READINESS SCORE (ĐỘ SẴN SÀNG)
+----------------------------------
+
+Công thức:
+    readiness = 0.5 × prereq_strength + 0.5 × coverage
+
+Trong đó:
+
+a) prereq_strength (50%):
+   - Dựa vào course prerequisites (Step 3)
+   - Nếu user đã học course A mà A → B là tiên quyết
+   - prereq_strength = strength(A → B)
+
+b) coverage (50%):
+   - Dựa vào concept coverage
+   - coverage = |concepts(user) ∩ concepts(target)| / |concepts(target)|
+   - Tỷ lệ concepts mục tiêu mà user đã có
+
+VÍ DỤ:
+User đã học: [C_A, C_B]
+Target course: C_C
+
+- C_A → C_C có strength = 0.8 (từ Step 3)
+- concepts(C_C) = {1, 2, 3, 4, 5} (5 concepts)
+- concepts(user) từ C_A, C_B = {1, 2, 6, 7}
+- covered = {1, 2} → coverage = 2/5 = 0.4
+
+readiness = 0.5 × 0.8 + 0.5 × 0.4 = 0.6
+
+→ User sẵn sàng 60% cho C_C
+
+2.3. CÁC LOẠI GIẢI THÍCH (EXPLANATIONS)
+---------------------------------------
+
+Step 7 tạo 3 loại giải thích:
+
+a) Path-based Explanation:
+   - Dựa vào association rules (Step 5)
+   - Format: "Students who took A, B succeed in this course with X% probability"
+   - Ví dụ: "Students who took C_629559, C_674903 succeed with 75% probability"
+
+b) Concept-based Explanation:
+   - Dựa vào concept coverage
+   - Format: "You've mastered X% of prerequisites: concept1, concept2, ..."
+   - Ví dụ: "You've mastered 40% of prerequisites: binary trees, hash maps"
+
+c) Similarity-based Explanation:
+   - Dựa vào ALS embeddings (Step 6)
+   - Format: "Students with similar learning patterns also took this course"
+   - Dùng khi ALS_score > 0.7
+
+TẠI SAO NHIỀU LOẠI GIẢI THÍCH?
+- Mỗi loại giải thích phù hợp với ngữ cảnh khác nhau
+- Path-based: mạnh khi có association rules
+- Concept-based: giải thích NGỮ NGHĨA, dễ hiểu
+- Similarity-based: dựa trên collaborative filtering
+
+================================================================================
+3. GIẢI THÍCH TỪNG BƯỚC CODE - TẠI SAO LẠI LÀM NHƯ VẬY?
+================================================================================
+
+BƯỚC 7.1: KHỞI TẠO VÀ CẤU HÌNH
+------------------------------
+Code:
+    W_ALS = 0.35
+    W_RULE = 0.25
+    W_RSCORE = 0.20
+    W_READINESS = 0.20
+
+    READINESS_THRESHOLD = 0.5
+    READINESS_PENALTY = 0.7
+
+TẠI SAO CÁC THAM SỐ NÀY?
+
+a) Hybrid weights:
+   - Tổng = 1.0 (chuẩn hóa)
+   - ALS cao nhất (35%) vì học được từ data
+   - Có thể tuning dựa trên validation set
+
+b) READINESS_THRESHOLD = 0.5:
+   - Ngưỡng "sẵn sàng"
+   - < 0.5: chưa sẵn sàng → penalty
+   - > 0.5: sẵn sàng → không penalty
+
+c) READINESS_PENALTY = 0.7:
+   - Giảm 30% score nếu chưa sẵn sàng
+   - 0.7 là empirically chosen
+   - Có thể tăng/giảm tùy độ "khắc nghiệt" muốn
+
+BƯỚC 7.2: LOAD DỮ LIỆU
+----------------------
+Code:
+    def load_data() -> Tuple[Dict, Dict, Dict, List, Dict, Dict, Dict]:
+        # Load user sequences
+        with open(f"{OUTPUT_PATH}/user_sequences.json", "r") as f:
+            user_sequences = json.load(f)
+
+        # Load course concepts
+        with open(f"{OUTPUT_PATH}/course_concepts.json", "r") as f:
+            course_concepts = json.load(f)
+
+        # Load course prerequisites
+        with open(f"{OUTPUT_PATH}/course_prerequisites.pkl", "rb") as f:
+            course_prereqs = pickle.load(f)
+
+        # Load association rules
+        with open(f"{OUTPUT_PATH}/association_rules.pkl", "rb") as f:
+            association_rules = pickle.load(f)
+
+        # Load ALS embeddings
+        with open(f"{OUTPUT_PATH}/als_embeddings.pkl", "rb") as f:
+            als_data = pickle.load(f)
+            user_embeddings = als_data["user_embeddings"]
+            course_embeddings = als_data["course_embeddings"]
+
+        # Load R_matrix
+        with open(f"{OUTPUT_PATH}/R_matrix/part-00000-*.csv", "r") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                R_data[(row["user_id"], row["course_id"])] = float(row["R_score"])
+
+KẾT QUẢ:
+- 11,385 user sequences
+- 887 course concepts
+- 179 courses có prerequisites
+- 327 association rules
+- 11,385 user embeddings, 744 course embeddings
+- R_matrix entries (tùy data)
+
+TẠI SAO TRY-EXCEPT?
+- Một số files có thể không tồn tại
+- Graceful degradation: nếu không có → dùng default
+- Ví dụ: không có R_matrix → dùng R_score = 0.4 (default)
+
+BƯỚC 7.3: TÍNH TOÁN READINESS SCORE
+-----------------------------------
+Code:
+    def calculate_readiness(user_id, target_course, user_sequences,
+                            course_concepts, course_prereqs):
+
+        # Get user's completed courses
+        user_courses = set()
+        mastered_courses_with_score = []
+        for item in user_sequences[user_id]:
+            course_id = item[1]
+            r_score = item[2]
+            passed = item[3]
+            user_courses.add(course_id)
+            if passed == 1 or r_score >= 0.6:
+                mastered_courses_with_score.append(course_id)
+
+        # Method 1: Prerequisite strength
+        prereq_strength = 0.0
+        for mastered_course in mastered_courses_with_score:
+            if mastered_course in course_prereqs:
+                if target_course in course_prereqs[mastered_course]:
+                    strength = course_prereqs[mastered_course][target_course]["strength"]
+                    prereq_strength = max(prereq_strength, strength)
+
+        # Method 2: Concept coverage
+        mastered_concepts = set()
+        for course_id in mastered_courses_with_score:
+            mastered_concepts.update(course_concepts.get(course_id, []))
+
+        target_concepts = set(course_concepts.get(target_course, []))
+        covered = mastered_concepts & target_concepts
+        coverage = len(covered) / len(target_concepts) if target_concepts else 1.0
+
+        # Combined readiness
+        readiness = 0.5 * prereq_strength + 0.5 * coverage
+        covered_concepts_list = sorted(covered)[:10]
+
+        return readiness, covered_concepts_list
+
+GIẢI THÍCH:
+
+a) Xác định courses đã học:
+   - passed == 1: user đã "pass" course (từ Step 2)
+   - r_score >= 0.6: ngưỡng "mastered"
+   - Chỉ tính courses đã mastered cho readiness
+
+b) Method 1 - Prerequisite strength:
+   - Kiểm tra xem user đã học prereq nào của target_course
+   - Lấy strength cao nhất (max)
+   - Nếu không có prereq match → 0.0
+
+c) Method 2 - Concept coverage:
+   - Tập hợp tất cả concepts từ mastered courses
+   - Giao với concepts của target_course
+   - coverage = |covered| / |target|
+
+d) Combined:
+   - 50-50 split giữa prereq và coverage
+   - Có thể điều chỉnh weights
+
+VÍ DỤ:
+User U đã học: C_A (pass), C_B (pass)
+Target: C_C
+
+- C_A → C_C: strength = 0.8
+- C_B → C_C: không có trong prereqs
+- prereq_strength = 0.8
+
+- concepts(C_C) = {1,2,3,4,5}
+- concepts(C_A) = {1,2,6}
+- concepts(C_B) = {3,7,8}
+- mastered_concepts = {1,2,3,6,7,8}
+- covered = {1,2,3}
+- coverage = 3/5 = 0.6
+
+readiness = 0.5×0.8 + 0.5×0.6 = 0.7
+
+→ User sẵn sàng 70%
+
+BƯỚC 7.4: TÍNH TOÁN ALS SCORE
+-----------------------------
+Code:
+    def calculate_als_score(user_id, course_id, user_embeddings, course_embeddings):
+        if user_id not in user_embeddings or course_id not in course_embeddings:
+            return 0.0
+
+        user_emb = np.array(user_embeddings[user_id])
+        course_emb = np.array(course_embeddings[course_id])
+
+        score = np.dot(user_emb, course_emb)
+        return float(score)
+
+TẠI SAO DOT PRODUCT?
+- ALS học sao cho dot product ≈ rating
+- Dot product cao → user phù hợp với course
+- Fast computation: O(rank) với rank = 100
+
+NORMALIZATION (ở calculate_hybrid_score):
+    als_score_norm = (als_score + 1) / 2
+
+TẠI SAO NORMALIZE?
+- als_score có thể âm hoặc > 1
+- Normalize về [0, 1] để kết hợp với các scores khác
+- Công thức: (x + 1) / 2 cho range [-1, 1] → [0, 1]
+
+BƯỚC 7.5: TÌM MATCHING RULES
+----------------------------
+Code:
+    def find_matching_rules(user_courses, target_course, association_rules):
+        user_course_set = set(user_courses)
+        matching = []
+
+        for rule in association_rules:
+            antecedent = set(rule["antecedent"])
+            consequent = rule["consequent"]
+
+            if antecedent.issubset(user_course_set) and target_course in consequent:
+                matching.append(rule)
+
+        matching.sort(key=lambda x: x["confidence"], reverse=True)
+        return matching
+
+LOGIC:
+- antecedent ⊆ user_courses: user đã học tất cả courses trong antecedent
+- target_course ∈ consequent: rule dự đoán target
+- Sort by confidence: rule nào confident hơn xếp trên
+
+VÍ DỤ:
+User courses: {C_A, C_B, C_C}
+Rules:
+  {C_A, C_B} → {C_D} confidence=0.8
+  {C_A} → {C_E} confidence=0.6
+  {C_F} → {C_G} confidence=0.9
+
+Matching rules cho target C_D:
+  {C_A, C_B} → {C_D} ✓ (antecedent ⊆ user_courses)
+
+Matching rules cho target C_E:
+  {C_A} → {C_E} ✓
+
+Matching rules cho target C_G:
+  Không có (C_F ∉ user_courses)
+
+BƯỚC 7.6: HYBRID SCORING
+------------------------
+Code:
+    def calculate_hybrid_score(user_id, course_id, user_courses,
+                               user_embeddings, course_embeddings,
+                               association_rules, R_data,
+                               user_sequences, course_concepts, course_prereqs):
+
+        # ALS score
+        als_score = calculate_als_score(...)
+        als_score_norm = (als_score + 1) / 2
+
+        # Rule confidence
+        matching_rules = find_matching_rules(...)
+        rule_confidence = matching_rules[0]["confidence"] if matching_rules else 0.0
+
+        # R_score
+        r_score = R_data.get((user_id, course_id), 0.4)
+        r_score_norm = r_score / 1.0
+
+        # Readiness
+        readiness, covered_concepts = calculate_readiness(...)
+
+        # Hybrid combination
+        final_score = (
+            W_ALS * als_score_norm +
+            W_RULE * rule_confidence +
+            W_RSCORE * r_score_norm +
+            W_READINESS * readiness
+        )
+
+        # Soft constraint
+        if readiness < READINESS_THRESHOLD:
+            final_score *= READINESS_PENALTY
+
+        return {
+            "user_id": user_id,
+            "course_id": course_id,
+            "final_score": final_score,
+            "als_score": als_score_norm,
+            "rule_confidence": rule_confidence,
+            "r_score": r_score_norm,
+            "readiness": readiness,
+            "covered_concepts": covered_concepts
+        }
+
+LUỒNG TÍNH TOÁN:
+
+1. Tính từng component score:
+   - als_score: từ embeddings
+   - rule_confidence: từ association rules
+   - r_score: từ R_matrix
+   - readiness: từ prerequisites + concepts
+
+2. Normalize về [0, 1]:
+   - als_score_norm: (x+1)/2
+   - r_score_norm: /1.0 (đã trong [0,1])
+   - rule_confidence: đã trong [0, 1]
+   - readiness: đã trong [0, 1]
+
+3. Kết hợp với weights:
+   - 0.35×als + 0.25×rule + 0.20×r + 0.20×readiness
+
+4. Apply soft constraint:
+   - Nếu readiness < 0.5 → penalty 30%
+
+VÍ DỤ:
+User U, Course C:
+- als_score = 0.8 → als_score_norm = 0.9
+- rule_confidence = 0.7
+- r_score = 0.6
+- readiness = 0.4
+
+final_score (trước penalty):
+  = 0.35×0.9 + 0.25×0.7 + 0.20×0.6 + 0.20×0.4
+  = 0.315 + 0.175 + 0.12 + 0.08
+  = 0.69
+
+readiness = 0.4 < 0.5 → penalty:
+  final_score = 0.69 × 0.7 = 0.483
+
+BƯỚC 7.7: GENERATE EXPLANATION
+------------------------------
+Code:
+    def generate_explanation(user_id, course_id, user_courses,
+                            score_data, course_concepts, association_rules):
+        explanations = []
+
+        # Type 1: Path-based
+        matching_rules = find_matching_rules(...)
+        if matching_rules:
+            rule = matching_rules[0]
+            antecedent = ", ".join(rule["antecedent"])
+            conf = rule["confidence"]
+            explanations.append({
+                "type": "path-based",
+                "text": f"Students who took {antecedent} succeed in this course with {conf:.0%} probability"
+            })
+
+        # Type 2: Concept-based
+        covered = score_data.get("covered_concepts", [])
+        if covered:
+            target_concepts = course_concepts.get(course_id, [])
+            coverage = len(covered) / len(target_concepts) * 100
+            explanations.append({
+                "type": "concept-based",
+                "text": f"You've mastered {coverage:.0f}% of prerequisites: {', '.join(covered[:5])}"
+            })
+
+        # Type 3: Similarity-based
+        als_score = score_data.get("als_score", 0)
+        if als_score > 0.7:
+            explanations.append({
+                "type": "similarity-based",
+                "text": "Students with similar learning patterns also took this course"
+            })
+
+        return explanations
+
+LOGIC TẠO EXPLANATIONS:
+
+1. Path-based (ưu tiên 1):
+   - Nếu có matching rule → dùng
+   - Giải thích dựa trên patterns của users khác
+   - Thuyết phục: "X% students succeed"
+
+2. Concept-based (ưu tiên 2):
+   - Nếu user có covered concepts → dùng
+   - Giải thích dựa trên kiến thức đã có
+   - Thuyết phục: "Bạn đã có Y% kiến thức nền"
+
+3. Similarity-based (fallback):
+   - Nếu ALS cao (> 0.7) → dùng
+   - Giải thích dựa trên collaborative filtering
+   - Thuyết phục: "Users giống bạn cũng học"
+
+VÍ DỤ:
+User U, Course C:
+- Matching rule: {C_A} → {C_C} confidence=0.75
+- Covered concepts: {binary trees, hash maps}
+- ALS score: 0.85
+
+Explanations:
+  [path-based] "Students who took C_A succeed in this course with 75% probability"
+  [concept-based] "You've mastered 40% of prerequisites: binary trees, hash maps"
+  [similarity-based] "Students with similar learning patterns also took this course"
+
+BƯỚC 7.8: GENERATE RECOMMENDATIONS
+----------------------------------
+Code:
+    def generate_recommendations(user_sequences, course_concepts,
+                                 user_embeddings, course_embeddings,
+                                 association_rules, R_data, course_prereqs,
+                                 sample_size=1000, top_k=10):
+
+        all_courses = list(course_concepts.keys())
+        sample_users = list(user_sequences.keys())[:sample_size]
+
+        recommendations = {}
+        explanations = {}
+
+        for user_id in sample_users:
+            # Get user's courses
+            user_courses = [item[1] for item in user_sequences[user_id]]
+
+            # Candidate courses (not taken)
+            candidate_courses = [c for c in all_courses if c not in user_courses]
+            candidate_courses = candidate_courses[:100]  # Limit for speed
+
+            # Score all candidates
+            scores = []
+            for course_id in candidate_courses:
+                score = calculate_hybrid_score(...)
+                scores.append(score)
+
+            # Sort by final score
+            scores.sort(key=lambda x: x["final_score"], reverse=True)
+
+            # Top-k recommendations
+            recommendations[user_id] = scores[:top_k]
+
+            # Generate explanations for top-5
+            user_explanations = []
+            for rec in scores[:5]:
+                course_id = rec["course_id"]
+                expl = generate_explanation(...)
+                user_explanations.append({
+                    "course_id": course_id,
+                    "explanations": expl
+                })
+            explanations[user_id] = user_explanations
+
+        return recommendations, explanations
+
+LUỒNG XỬ LÝ:
+
+1. Sample users:
+   - Lấy 1000 users đầu tiên (để demo)
+   - Có thể tăng lên toàn bộ 11,385 users
+
+2. Với mỗi user:
+   a) Lấy danh sách courses đã học
+   b) Tạo candidate courses (chưa học)
+   c) Giới hạn 100 candidates (tốc độ)
+
+3. Score candidates:
+   - Tính hybrid score cho mỗi candidate
+   - Lưu tất cả components
+
+4. Sort và lấy top-k:
+   - Sort theo final_score (giảm dần)
+   - Lấy top 10 recommendations
+
+5. Generate explanations:
+   - Cho top 5 recommendations
+   - Mỗi course có thể có nhiều explanations
+
+KẾT QUẢ:
+- Generated recommendations for 1,000 users
+- 10 recommendations per user
+- Explanations for top 5 per user
+
+BƯỚC 7.9: EVALUATION METRICS
+----------------------------
+Code:
+    def calculate_metrics(recommendations, explanations, k=10):
+        metrics = {
+            "coverage": len(recommendations),
+            "avg_recs_per_user": np.mean([len(r) for r in recommendations.values()]),
+        }
+
+        # Score distribution
+        all_scores = []
+        for recs in recommendations.values():
+            for rec in recs:
+                all_scores.append(rec["final_score"])
+
+        metrics["avg_score"] = np.mean(all_scores)
+        metrics["score_std"] = np.std(all_scores)
+
+        # Readiness statistics
+        all_readiness = []
+        for recs in recommendations.values():
+            for rec in recs:
+                all_readiness.append(rec["readiness"])
+
+        metrics["avg_readiness"] = np.mean(all_readiness)
+        metrics["high_readiness_ratio"] = sum(1 for r in all_readiness if r >= 0.5) / len(all_readiness)
+
+        # Explanation coverage
+        total_explanations = 0
+        for user_expl in explanations.values():
+            for course_expl in user_expl:
+                if course_expl["explanations"]:
+                    total_explanations += 1
+
+        total_recs = sum(len(recs) for recs in recommendations.values())
+        metrics["explanation_coverage"] = total_explanations / total_recs
+
+        # Explanation type distribution
+        type_counts = defaultdict(int)
+        for user_expl in explanations.values():
+            for course_expl in user_expl:
+                for expl in course_expl["explanations"]:
+                    type_counts[expl["type"]] += 1
+
+        metrics["path_based_count"] = type_counts.get("path-based", 0)
+        metrics["concept_based_count"] = type_counts.get("concept-based", 0)
+        metrics["similarity_based_count"] = type_counts.get("similarity-based", 0)
+
+        return metrics
+
+CÁC METRICS:
+
+a) Coverage metrics:
+   - coverage: số users có recommendations
+   - avg_recs_per_user: số recs trung bình mỗi user
+
+b) Score metrics:
+   - avg_score: điểm hybrid trung bình
+   - score_std: độ biến thiên của scores
+   - Score cao + std thấp → recommendations nhất quán
+
+c) Readiness metrics:
+   - avg_readiness: độ sẵn sàng trung bình
+   - high_readiness_ratio: % recommendations có readiness >= 0.5
+   - Readiness cao → recommendations phù hợp với trình độ
+
+d) Explanation metrics:
+   - explanation_coverage: % recommendations có explanation
+   - path_based_count: số lượng path-based explanations
+   - concept_based_count: số lượng concept-based explanations
+   - similarity_based_count: số lượng similarity-based explanations
+
+KẾT QUẢ THỰC TẾ:
+    coverage: 1000
+    avg_recs_per_user: 10.0
+    avg_score: 0.2802
+    score_std: 0.0810
+    avg_readiness: 0.0809
+    high_readiness_ratio: 14.49%
+    explanation_coverage: 44.74%
+    path_based_count: 263
+    concept_based_count: 414
+    similarity_based_count: 4234
+
+NHẬN XÉT:
+- avg_readiness = 0.08: RẤT THẤP
+- high_readiness_ratio = 14.49%: chỉ 14% recommendations có readiness >= 0.5
+- explanation_coverage = 44.74%: dưới 50% có explanation
+- similarity_based_count = 4234: đa số là similarity-based (ALS cao)
+- path_based_count = 263: rất ít path-based (không khớp rules)
+
+TẠI SAO READINESS THẤP?
+- Course prerequisites chỉ có 179 courses (trong 887)
+- Association rules chỉ có 327 rules
+- Users có thể học courses không có prerequisites rõ ràng
+- Concept coverage có thể thấp nếu concepts không overlap
+
+BƯỚC 7.10: LƯU KẾT QUẢ
+----------------------
+Code:
+    final_output = {
+        "recommendations": recommendations,
+        "explanations": explanations,
+        "metrics": metrics,
+        "parameters": {
+            "W_ALS": W_ALS,
+            "W_RULE": W_RULE,
+            "W_RSCORE": W_RSCORE,
+            "W_READINESS": W_READINESS,
+            "READINESS_THRESHOLD": READINESS_THRESHOLD,
+            "READINESS_PENALTY": READINESS_PENALTY
+        }
+    }
+
+    with open(f"{OUTPUT_PATH}/final_recommendations.pkl", "wb") as f:
+        pickle.dump(final_output, f)
+
+    with open(f"{OUTPUT_PATH}/final_recommendations.json", "w") as f:
+        json.dump(final_output, f, indent=2)
+
+OUTPUT FILES:
+
+a) final_recommendations.pkl:
+   - Toàn bộ recommendations + explanations
+   - Metrics và parameters
+   - Dùng cho Python applications
+
+b) final_recommendations.json:
+   - Same content dưới dạng JSON
+   - Dễ đọc, dễ chia sẻ
+   - Dùng cho web applications
+
+================================================================================
+4. VÍ DỤ MINH HỌA
+================================================================================
+
+VÍ DỤ: User U_173698
+
+User đã học: [C_696908, C_1756060]
+
+Recommendations:
+  1. C_697374: final_score=0.3086
+     - ALS: 1.0311 (rất cao)
+     - Rule: 0.0000 (không khớp rule)
+     - R_score: 0.4000 (default)
+     - Readiness: 0.0000 (chưa sẵn sàng)
+     Explanation: [similarity-based] "Students with similar patterns also took this"
+
+  2. C_697293: final_score=0.2797
+     - ALS: 0.9129
+     - Rule: 0.0000
+     - R_score: 0.4000
+     - Readiness: 0.0000
+     Explanation: [similarity-based] ...
+
+NHẬN XÉT:
+- ALS scores cao → user embeddings phù hợp với course embeddings
+- Rule confidence = 0 → không có association rules khớp
+- Readiness = 0 → user chưa học prerequisites
+- Đa số explanations là similarity-based (từ ALS)
+
+================================================================================
+5. SO SÁNH VỚI CÁC STEPS TRƯỚC
+================================================================================
+
++------------------+------------------+------------------+------------------+
+| YẾU TỐ           | Step 5           | Step 6           | Step 7           |
++------------------+------------------+------------------+------------------+
+| Phương pháp      | Association      | Matrix           | Hybrid           |
+|                  | Rules            | Factorization    | Fusion           |
++------------------+------------------+------------------+------------------+
+| Output           | Rules            | Embeddings       | Recommendations  |
+|                  | (A→B + metrics)  | (vectors)        | + Explanations   |
++------------------+------------------+------------------+------------------+
+| Giải thích       | Có (rules)       | Không            | Có (3 types)     |
++------------------+------------------+------------------+------------------+
+| Cá nhân hóa      | Không            | Có               | Có               |
++------------------+------------------+------------------+------------------+
+
+ĐIỂM MẠNH CỦA STEP 7:
+- Tổng hợp ưu điểm của tất cả steps
+- Explainable recommendation (3 types)
+- Có metrics đánh giá
+
+ĐIỂM YẾU:
+- Readiness thấp (cải thiện được bằng cách thu thập thêm data)
+- Phụ thuộc vào chất lượng của các steps trước
+
+================================================================================
+6. ỨNG DỤNG THỰC TẾ
+================================================================================
+
+6.1. GỢI Ý VỚI GIẢI THÍCH
+-------------------------
+
+User interface:
+  "Gợi ý cho bạn: Machine Learning (C_883345)"
+
+  Giải thích:
+  ✓ Students who took Data Structures succeed with 75% probability
+  ✓ You've mastered 60% of prerequisites: algorithms, linear algebra
+  ✓ Students with similar learning patterns also took this course
+
+6.2. CẢNH BÁO SỚM
+-----------------
+
+Nếu readiness < 0.5:
+  "Cảnh báo: Course này yêu cầu kiến thức nền mà bạn chưa có.
+   Khuyến nghị học các courses sau trước: C_A, C_B"
+
+6.3. GỢI Ý LỘ TRÌNH
+-------------------
+
+Dựa vào readiness scores:
+  "Để học Machine Learning, bạn nên học theo thứ tự:
+   1. Python Programming (readiness: 1.0) ✓
+   2. Linear Algebra (readiness: 0.8) ✓
+   3. Machine Learning (readiness: 0.6)"
+
+================================================================================
+7. HẠN CHẾ VÀ CẢI THIỆN
+================================================================================
+
+7.1. VỀ READINESS THẤP
+----------------------
+
+VẤN ĐỀ: avg_readiness = 0.08 (rất thấp)
+
+NGUYÊN NHÂN:
+- Course prerequisites chỉ cover 179/887 courses
+- Association rules chỉ có 327 rules
+- Concept overlap thấp
+
+CẢI THIỆN:
+- Mở rộng course prerequisites (Step 3)
+- Tăng MIN_SUPPORT để có nhiều rules hơn (Step 5)
+- Dùng semantic similarity thay vì exact match cho concepts
+
+7.2. VỀ EXPLANATION COVERAGE
+----------------------------
+
+VẤN ĐỀ: 44.74% có explanations
+
+NGUYÊN NHÂN:
+- Path-based cần matching rules (ít)
+- Concept-based cần covered concepts (thấp)
+- Chỉ similarity-based là luôn có (khi ALS cao)
+
+CẢI THIỆN:
+- Tạo thêm explanation types
+- Dùng knowledge graph (Step 4) cho explanations
+- Content-based explanations (course descriptions)
+
+7.3. VỀ SCALABILITY
+-------------------
+
+VẤN ĐỀ: 1000 users × 100 candidates × hybrid scoring = 100,000 calculations
+
+CẢI THIỆN:
+- Pre-compute ALS scores
+- Candidate selection thông minh (không cần score tất cả)
+- Parallel processing
+
+================================================================================
+8. TÓM TẮT
+================================================================================
+
+Step 7: GỢI Ý HYBRID VÀ ĐÁNH GIÁ với các đặc điểm:
+
+1. ĐẦU VÀO:
+   - User sequences (Step 2)
+   - Course concepts
+   - Course prerequisites (Step 3)
+   - Association rules (Step 5)
+   - ALS embeddings (Step 6)
+   - R_matrix (Step 1)
+
+2. XỬ LÝ CHÍNH:
+   - Calculate readiness score (prereq + coverage)
+   - Calculate ALS score (dot product)
+   - Find matching rules
+   - Hybrid fusion: 0.35·ALS + 0.25·rule + 0.20·R + 0.20·readiness
+   - Apply soft constraint (penalty if readiness < 0.5)
+   - Generate explanations (3 types)
+
+3. THAM SỐ:
+   - W_ALS = 0.35, W_RULE = 0.25, W_RSCORE = 0.20, W_READINESS = 0.20
+   - READINESS_THRESHOLD = 0.5
+   - READINESS_PENALTY = 0.7
+
+4. KẾT QUẢ (1000 users):
+   - avg_score: 0.2802
+   - avg_readiness: 0.0809
+   - high_readiness_ratio: 14.49%
+   - explanation_coverage: 44.74%
+   - path_based: 263, concept_based: 414, similarity_based: 4234
+
+5. CÔNG THỨC:
+   - readiness = 0.5×prereq_strength + 0.5×coverage
+   - final_score = Σ(weights × components)
+   - penalty: if readiness < 0.5 → score × 0.7
+
+6. OUTPUT FILES:
+   - final_recommendations.pkl
+   - final_recommendations.json
+
+7. ỨNG DỤNG:
+   - Gợi ý khóa học với giải thích
+   - Cảnh báo sớm về prerequisites
+   - Gợi ý lộ trình học tập
+
+================================================================================
+HẾT GIẢI THÍCH STEP 7
+================================================================================
+
+File được tạo bởi: Assistant
+Ngày: 2026-05-02
+Ngôn ngữ: Tiếng Việt

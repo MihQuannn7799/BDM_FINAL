@@ -1,0 +1,939 @@
+================================================================================
+STEP 7B: ĐÁNH GIÁ VỚI CHỈ SỐ CHÍNH XÁC - GIẢI THÍCH CHI TIẾT
+================================================================================
+
+DỰ ÁN: MOOCCubeX - Hệ thống học tập thích ứng trong MOOCs
+FILE: step7b_evaluation_metrics.ipynb
+VỊ TRÍ: scripts/notebooks/step7b_evaluation_metrics.ipynb
+
+================================================================================
+1. TỔNG QUAN VÀ MỤC ĐÍCH
+================================================================================
+
+Step 7b thực hiện ĐÁNH GIÁ CHÍNH THỨC hệ thống gợi ý với các metrics chuẩn
+trong lĩnh vực Recommendation Systems, sử dụng phương pháp TEMPORAL SPLIT
+(chia theo thời gian) để đánh giá khả năng dự đoán tương lai.
+
+MỤC TIÊU CHÍNH:
+- Chia data theo thời gian: 80% đầu huấn luyện, 20% sau kiểm tra
+- Đánh giá 4 mô hình: Hybrid, Pure ALS, Popularity, Content-Based
+- Tính các metrics: Precision@K, NDCG@K, MRR, Catalog Coverage
+- So sánh hiệu suất giữa các mô hình
+
+INPUT (ĐẦU VÀO):
+- user_sequences.json: Chuỗi khóa học (11,385 users)
+- course_concepts.json: Ánh xạ course → concepts (887 courses)
+- als_embeddings.pkl: Embeddings từ Step 6
+- association_rules.pkl: Rules từ Step 5 (327 rules)
+- course_prereqs.pkl: Prerequisites từ Step 3 (179 courses)
+- R_matrix: R-scores từ Step 1 (18,370 entries)
+
+OUTPUT (ĐẦU RA):
+- evaluation_results_fixed.pkl: Kết quả đánh giá
+- evaluation_results_fixed.json: Định dạng JSON
+- Bảng so sánh 4 mô hình
+
+TẠI SAO CẦN STEP 7B?
+-------------------
+Step 7 đã tạo recommendations nhưng:
+- Chưa đánh giá CHẤT LƯỢNG thực sự
+- Chưa so sánh với baselines
+- Chưa dùng test set riêng biệt
+
+Step 7b bổ sung:
+- Temporal split: mô phỏng thực tế (dùng quá khứ → dự đoán tương lai)
+- Metrics chuẩn: Precision, NDCG, MRR
+- Baseline comparison: biết mô hình nào tốt nhất
+
+ỨNG DỤNG:
+- Báo cáo khoa học (paper evaluation)
+- Chọn mô hình tốt nhất cho production
+- Tuning hyperparameters
+
+================================================================================
+2. KHÁI NIỆM VÀ CÔNG THỨC CHÍNH
+================================================================================
+
+2.1. TEMPORAL TRAIN/TEST SPLIT
+------------------------------
+
+Ý TƯỞNG:
+- Với mỗi user, lấy 80% courses ĐẦU (theo thời gian) → TRAIN
+- 20% courses SAU → TEST
+- Mô phỏng thực tế: dùng quá khứ để dự đoán tương lai
+
+VÍ DỤ:
+User có sequence: [C1, C2, C3, C4, C5] (theo thời gian)
+
+Split 80/20:
+- Train: [C1, C2, C3, C4] (80% = 4 courses)
+- Test: [C5] (20% = 1 course)
+
+TẠI SAO KHÔNG DÙNG RANDOM SPLIT?
+- Random split: có thể leak thông tin tương lai vào quá khứ
+- Temporal split: tôn trọng thứ tự thời gian
+- Thực tế hơn: trong production, ta chỉ biết quá khứ
+
+2.2. CÁC METRICS ĐÁNH GIÁ
+-------------------------
+
+a) PRECISION@K (ĐỘ CHÍNH XÁC)
+-----------------------------
+
+Công thức:
+    Precision@K = |{recommended courses} ∩ {test courses}| / K
+
+Ý nghĩa:
+- Tỷ lệ recommendations ĐÚNG trong top-K
+- Precision cao → recommendations chính xác
+
+VÍ DỤ:
+Test courses: {C_A, C_B, C_C}
+Top-10 recommendations: {C_A, C_X, C_Y, C_B, C_Z, ...}
+
+Hits trong top-10: C_A, C_B → 2 hits
+Precision@10 = 2/10 = 0.2 (20%)
+
+VÍ DỤ THỰC TẾ STEP 7B:
+Precision@10 = 0.0987 (9.87%)
+→ Trung bình 1 trong 10 recommendations là đúng
+
+b) NDCG@K (NORMALIZED DISCOUNTED CUMULATIVE GAIN)
+--------------------------------------------------
+
+Công thức:
+    DCG@K = Σ (relevance_i / log2(i + 1))  với i = 1 đến K
+
+    IDCG@K = DCG@K của ideal ranking (tất cả relevant items xếp đầu)
+
+    NDCG@K = DCG@K / IDCG@K
+
+Trong đó:
+- relevance_i = 1 nếu course_i trong test set, 0 nếu không
+- log2(i + 1): discount factor (vị trí càng xa càng ít giá trị)
+
+TẠI SAO DÙNG NDCG?
+- Precision không phân biệt vị trí của hits
+- NDCG thưởng cho hits ở ĐẦU danh sách
+- NDCG = 1.0: perfect ranking
+- NDCG = 0.0: worst ranking
+
+VÍ DỤ:
+Test courses: {C_A, C_B}
+
+Recommendation 1: [C_A, C_B, C_X, C_Y, ...]
+- DCG = 1/log2(2) + 1/log2(3) = 1/1 + 1/1.585 = 1.63
+- IDCG = 1/log2(2) + 1/log2(3) = 1.63 (perfect)
+- NDCG = 1.63/1.63 = 1.0 ✓
+
+Recommendation 2: [C_X, C_Y, C_A, C_B, ...]
+- DCG = 0 + 0 + 1/log2(4) + 1/log2(5) = 0.5 + 0.431 = 0.931
+- IDCG = 1.63
+- NDCG = 0.931/1.63 = 0.57
+
+VÍ DỤ THỰC TẾ STEP 7B:
+NDCG@10 = 0.5813
+→ Ranking ở mức trung bình-khá
+
+c) MRR (MEAN RECIPROCAL RANK)
+-----------------------------
+
+Công thức:
+    RR (Reciprocal Rank) = 1 / rank_của_first_hit
+
+    MRR = trung bình RR của tất cả users
+
+Ý nghĩa:
+- Chỉ quan tâm FIRST HIT (lần đầu tiên đúng)
+- RR = 1.0: hit ở vị trí đầu tiên
+- RR = 0.5: hit ở vị trí thứ 2
+- RR = 0.0: không có hit nào
+
+VÍ DỤ:
+Test courses: {C_A, C_B, C_C}
+
+User 1: Recommendations = [C_A, C_X, C_Y, ...]
+- First hit: C_A ở rank 1
+- RR = 1/1 = 1.0
+
+User 2: Recommendations = [C_X, C_Y, C_B, C_Z, ...]
+- First hit: C_B ở rank 3
+- RR = 1/3 = 0.333
+
+User 3: Recommendations = [C_X, C_Y, C_Z, ...] (không có hit)
+- RR = 0.0
+
+MRR = (1.0 + 0.333 + 0.0) / 3 = 0.444
+
+VÍ DỤ THỰC TẾ STEP 7B:
+MRR = 0.5474
+→ First hit trung bình ở rank ~2
+
+d) CATALOG COVERAGE (ĐỘ PHỦ DANH MỤC)
+-------------------------------------
+
+Công thức:
+    Coverage = |{courses được recommend}| / |tổng số courses|
+
+Ý nghĩa:
+- Tỷ lệ courses trong catalog được recommend
+- Coverage cao → hệ thống gợi ý đa dạng
+- Coverage thấp → chỉ recommend popular courses
+
+VÍ DỤ:
+Tổng số courses: 887
+Courses được recommend (trong top-10 của tất cả users): 338
+
+Coverage = 338/887 = 0.3811 (38.11%)
+
+VÍ DỤ THỰC TẾ STEP 7B:
+- Hybrid: 38.11%
+- Pure ALS: 33.26%
+- Popularity: 3.04% (chỉ recommend courses phổ biến)
+- Content-Based: 69.56% (đa dạng nhất)
+
+2.3. SO SÁNH CÁC METRICS
+------------------------
+
++------------------+------------------+------------------+------------------+
+| METRIC           | Ý NGHĨA          | GIÁ TRỊ          | MONG MUỐN        |
++------------------+------------------+------------------+------------------+
+| Precision@10     | % đúng trong     | 0.0987           | Cao hơn          |
+|                  | top-10           | (9.87%)          |                  |
++------------------+------------------+------------------+------------------+
+| NDCG@10          | Chất lượng       | 0.5813           | Gần 1.0          |
+|                  | ranking          | (58.13%)         |                  |
++------------------+------------------+------------------+------------------+
+| MRR              | Rank trung bình  | 0.5474           | Gần 1.0          |
+|                  | của first hit    |                  |                  |
++------------------+------------------+------------------+------------------+
+| Coverage         | % courses được   | 38.11%           | Cao hơn          |
+|                  | recommend        |                  | (nhưng trade-off)|
++------------------+------------------+------------------+------------------+
+
+================================================================================
+3. GIẢI THÍCH TỪNG BƯỚC CODE - TẠI SAO LẠI LÀM NHƯ VẬY?
+================================================================================
+
+BƯỚC 7B.1: KHỞI TẠO VÀ CẤU HÌNH
+------------------------------
+Code:
+    import json
+    import pickle
+    import numpy as np
+    import pandas as pd
+    from collections import defaultdict
+    from typing import Dict, List, Tuple, Set
+    import csv
+    import os
+
+    np.random.seed(42)
+
+TẠI SAO np.random.seed(42)?
+- Đảm bảo reproducibility (chạy lại ra cùng kết quả)
+- 42 là số may mắn trong programming
+- Quan trọng cho scientific experiments
+
+BƯỚC 7B.2: LOAD DỮ LIỆU
+-----------------------
+Code:
+    # Load user sequences
+    with open(f"{OUTPUT_PATH}/user_sequences.json", "r") as f:
+        user_sequences = json.load(f)
+
+    # Load course concepts
+    with open(f"{OUTPUT_PATH}/course_concepts.json", "r") as f:
+        course_concepts = json.load(f)
+
+    # Load ALS embeddings
+    with open(f"{OUTPUT_PATH}/als_embeddings.pkl", "rb") as f:
+        als_data = pickle.load(f)
+        user_embeddings = als_data["user_embeddings"]
+        course_embeddings = als_data["course_embeddings"]
+
+    # Load association rules
+    with open(f"{OUTPUT_PATH}/association_rules.pkl", "rb") as f:
+        association_rules = pickle.load(f)
+
+    # Load course prerequisites
+    with open(f"{OUTPUT_PATH}/course_prerequisites.pkl", "rb") as f:
+        course_prereqs = pickle.load(f)
+
+    # Load R-scores from CSV
+    R_SCORE_DICT = {}
+    with open(r_matrix_path, 'r') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            key = (row["user_id"], row["course_id"])
+            R_SCORE_DICT[key] = float(row["R_score"])
+
+KẾT QUẢ:
+- 11,385 user sequences
+- 887 course concepts
+- 11,385 user embeddings, 744 course embeddings
+- 327 association rules
+- 179 course prerequisites
+- 18,370 R-score entries
+
+BƯỚC 7B.3: TÍNH ALS NORMALIZATION CONSTANTS
+-------------------------------------------
+Code:
+    print("\nComputing ALS normalization constants...")
+    als_scores_sample = []
+    for user_id in list(user_embeddings.keys())[:1000]:
+        for course_id in list(course_embeddings.keys())[:100]:
+            score = np.dot(np.array(user_embeddings[user_id]),
+                          np.array(course_embeddings[course_id]))
+            als_scores_sample.append(score)
+
+    ALS_MIN = np.min(als_scores_sample)
+    ALS_MAX = np.max(als_scores_sample)
+    print(f"ALS score range: [{ALS_MIN:.4f}, {ALS_MAX:.4f}]")
+
+    def normalize_als_score(raw_score: float) -> float:
+        if ALS_MAX == ALS_MIN:
+            return 0.5
+        normalized = (raw_score - ALS_MIN) / (ALS_MAX - ALS_MIN)
+        return np.clip(normalized, 0, 1)
+
+TẠI SAO CẦN NORMALIZE ALS?
+- ALS raw score có thể > 1 hoặc < 0
+- Cần normalize về [0, 1] để kết hợp với các scores khác
+- Min-max scaling: (x - min) / (max - min)
+
+KẾT QUẢ:
+    ALS score range: [0.0236, 4.0241]
+
+→ ALS scores dao động từ 0.02 đến 4.02
+→ Sau normalize: [0, 1]
+
+TẠI SAO SAMPLE 1000 users × 100 courses?
+- Không cần tính toàn bộ 11,385 × 744 = 8.5M pairs
+- Sample đủ lớn để ước lượng min-max
+- Tiết kiệm thời gian
+
+BƯỚC 7B.4: TEMPORAL TRAIN/TEST SPLIT
+------------------------------------
+Code:
+    def temporal_split(user_sequences: Dict, train_ratio: float = 0.8):
+        train_data = {}
+        test_data = {}
+
+        for user in user_sequences:
+            user_id = user["user_id"]
+            sequence = user["sequence"]
+            if len(sequence) < 2:
+                continue
+
+            split_idx = max(1, int(len(sequence) * train_ratio))
+            train_courses = [item[1] for item in sequence[:split_idx]]
+            test_courses = [item[1] for item in sequence[split_idx:]]
+
+            if train_courses and test_courses:
+                train_data[user_id] = train_courses
+                test_data[user_id] = test_courses
+
+        return train_data, test_data
+
+    train_data, test_data = temporal_split(user_sequences, train_ratio=0.8)
+
+LUỒNG XỬ LÝ:
+
+1. Duyệt qua từng user:
+   - Lấy sequence courses (đã sorted theo thời gian)
+
+2. Tính split index:
+   - split_idx = 80% độ dài sequence
+   - max(1, ...): đảm bảo có ít nhất 1 course trong train
+
+3. Split:
+   - Train: courses từ đầu đến split_idx
+   - Test: courses từ split_idx đến cuối
+
+4. Filter:
+   - Chỉ giữ users có CẢ train và test courses
+
+KẾT QUẢ:
+    Temporal Split (80/20):
+      Train users: 11,385
+      Test users: 11,385
+      Train interactions: 52,352
+      Test interactions: 19,127
+
+NHẬN XÉT:
+- Tất cả 11,385 users đều có cả train và test
+- Train nhiều hơn Test (~2.7x)
+- Test có 19,127 interactions → đủ để đánh giá
+
+BƯỚC 7B.5: HELPER FUNCTIONS
+---------------------------
+
+a) calculate_als_score:
+    def calculate_als_score(user_id, course_id):
+        if user_id not in user_embeddings or course_id not in course_embeddings:
+            return 0.0
+        user_emb = np.array(user_embeddings[user_id])
+        course_emb = np.array(course_embeddings[course_id])
+        return float(np.dot(user_emb, course_emb))
+
+→ Dot product của 2 embeddings
+
+b) calculate_als_score_normalized:
+    def calculate_als_score_normalized(user_id, course_id):
+        raw_score = calculate_als_score(user_id, course_id)
+        return normalize_als_score(raw_score)
+
+→ Normalize về [0, 1]
+
+c) find_matching_rules:
+    def find_matching_rules(user_courses, target_course):
+        user_course_set = set(user_courses)
+        matching = []
+        for rule in association_rules:
+            antecedent = set(rule["antecedent"])
+            consequent = rule["consequent"]
+            if antecedent.issubset(user_course_set) and target_course in consequent:
+                matching.append(rule)
+        matching.sort(key=lambda x: x["confidence"], reverse=True)
+        return matching
+
+→ Tìm rules khớp với user history
+
+d) calculate_readiness:
+    def calculate_readiness(user_id, target_course, user_train_courses):
+        target_concepts = set(course_concepts.get(target_course, []))
+
+        # FIXED: Nếu course không có concepts → readiness = 0
+        if not target_concepts:
+            return 0.0
+
+        prereq_strength = 0.0
+        for mastered_course in user_train_courses:
+            if mastered_course in course_prereqs:
+                if target_course in course_prereqs[mastered_course]:
+                    strength = course_prereqs[mastered_course][target_course]["strength"]
+                    prereq_strength = max(prereq_strength, strength)
+
+        mastered_concepts = set()
+        for course_id in user_train_courses:
+            mastered_concepts.update(course_concepts.get(course_id, []))
+
+        covered = mastered_concepts & target_concepts
+        coverage = len(covered) / len(target_concepts)
+
+        return 0.5 * prereq_strength + 0.5 * coverage
+
+TẠI SAO "FIXED: returns 0.0 for courses without concepts"?
+- Course không có concepts → không tính được coverage
+- Coverage = 0/0 → lỗi chia cho 0
+- Fix: return 0.0 (user chưa sẵn sàng)
+
+e) get_r_score:
+    def get_r_score(user_id, course_id):
+        return R_SCORE_DICT.get((user_id, course_id), 0.4)
+
+→ Lấy R_score từ pre-loaded data, default = 0.4
+
+BƯỚC 7B.6: RECOMMENDATION FUNCTIONS
+-----------------------------------
+
+a) Hybrid Recommendations:
+    def generate_hybrid_recommendations(user_id, train_courses, candidate_courses, top_k=10):
+        W_ALS = 0.35
+        W_RULE = 0.25
+        W_RSCORE = 0.20
+        W_READINESS = 0.20
+        READINESS_THRESHOLD = 0.5
+        READINESS_PENALTY = 0.7
+
+        scores = []
+        for course_id in candidate_courses:
+            if course_id in train_courses:
+                continue
+
+            als_score = calculate_als_score_normalized(user_id, course_id)
+            matching_rules = find_matching_rules(train_courses, course_id)
+            rule_confidence = matching_rules[0]["confidence"] if matching_rules else 0.0
+            r_score = get_r_score(user_id, course_id)
+            readiness = calculate_readiness(user_id, course_id, train_courses)
+
+            final_score = (W_ALS * als_score + W_RULE * rule_confidence +
+                          W_RSCORE * r_score + W_READINESS * readiness)
+
+            if readiness < READINESS_THRESHOLD:
+                final_score *= READINESS_PENALTY
+
+            scores.append((course_id, final_score))
+
+        scores.sort(key=lambda x: x[1], reverse=True)
+        return [c for c, s in scores[:top_k]]
+
+LOGIC:
+1. Loại courses đã học (trong train)
+2. Tính 4 component scores cho mỗi candidate
+3. Kết hợp với weights
+4. Apply penalty nếu readiness < 0.5
+5. Sort và lấy top-k
+
+b) Pure ALS Recommendations:
+    def generate_als_recommendations(user_id, train_courses, candidate_courses, top_k=10):
+        scores = []
+        for course_id in candidate_courses:
+            if course_id in train_courses:
+                continue
+            als_score = calculate_als_score(user_id, course_id)
+            scores.append((course_id, als_score))
+        scores.sort(key=lambda x: x[1], reverse=True)
+        return [c for c, s in scores[:top_k]]
+
+→ Chỉ dùng ALS score (không normalize, vì chỉ cần ranking)
+
+c) Popularity Recommendations:
+    def generate_popularity_recommendations(train_courses, candidate_courses, top_k=10):
+        course_counts = defaultdict(int)
+        for user_courses in train_data.values():
+            for course_id in user_courses:
+                course_counts[course_id] += 1
+        scores = []
+        for course_id in candidate_courses:
+            if course_id in train_courses:
+                continue
+            scores.append((course_id, course_counts.get(course_id, 0)))
+        scores.sort(key=lambda x: x[1], reverse=True)
+        return [c for c, s in scores[:top_k]]
+
+→ Recommend courses phổ biến nhất (nhiều người học nhất)
+
+d) Content-Based Recommendations:
+    def generate_content_based_recommendations(user_id, train_courses, candidate_courses, top_k=10):
+        user_concepts = set()
+        for course_id in train_courses:
+            user_concepts.update(course_concepts.get(course_id, []))
+
+        scores = []
+        for course_id in candidate_courses:
+            if course_id in train_courses:
+                continue
+            course_concepts_set = set(course_concepts.get(course_id, []))
+            overlap = len(user_concepts & course_concepts_set)
+            scores.append((course_id, overlap))
+        scores.sort(key=lambda x: x[1], reverse=True)
+        return [c for c, s in scores[:top_k]]
+
+→ Recommend courses có nhiều concepts chung với courses đã học
+
+BƯỚC 7B.7: EVALUATION METRICS
+-----------------------------
+
+a) Precision@K:
+    def precision_at_k(recommendations, test_courses, k=10):
+        if not recommendations:
+            return 0.0
+        test_set = set(test_courses)
+        hits = sum(1 for c in recommendations[:k] if c in test_set)
+        return hits / min(k, len(recommendations))
+
+LOGIC:
+- Chuyển test_courses thành set (lookup nhanh)
+- Đếm hits trong top-k recommendations
+- Chia cho k (hoặc số recommendations nếu < k)
+
+b) NDCG@K (FIXED):
+    def ndcg_at_k(recommendations, test_courses, k=10):
+        test_set = set(test_courses)
+        if not test_set:
+            return 0.0
+
+        dcg = 0.0
+        for i, course_id in enumerate(recommendations[:k]):
+            if course_id in test_set:
+                dcg += 1.0 / np.log2(i + 2)
+
+        ideal_k = min(k, len(test_set))
+        if ideal_k == 0:
+            return 0.0
+        idcg = sum(1.0 / np.log2(i + 1) for i in range(1, ideal_k + 1))
+        return dcg / idcg if idcg > 0 else 0.0
+
+FIXED GÌ?
+- IDCG calculation đúng công thức
+- Ideal ranking: tất cả relevant items ở đầu
+- IDCG = Σ 1/log2(i+1) với i = 1 đến ideal_k
+
+DCG calculation:
+- i + 2: vì index bắt đầu từ 0, nhưng formula từ 1
+- 1/log2(i+2): discount factor
+
+VÍ DỤ:
+Recommendations: [hit, miss, hit, ...]
+- i=0 (hit): 1/log2(2) = 1/1 = 1.0
+- i=1 (miss): 0
+- i=2 (hit): 1/log2(4) = 1/2 = 0.5
+- DCG = 1.0 + 0.5 = 1.5
+
+c) MRR:
+    def mrr(recommendations, test_courses):
+        test_set = set(test_courses)
+        for i, course_id in enumerate(recommendations):
+            if course_id in test_set:
+                return 1.0 / (i + 1)
+        return 0.0
+
+LOGIC:
+- Tìm first hit (recommendation đầu tiên trong test set)
+- Return 1/rank
+- Không có hit → 0.0
+
+d) Evaluate Model:
+    def evaluate_model(model_func, sample_users=1000, k=10):
+        all_users = list(test_data.keys())[:sample_users]
+        all_courses = list(course_concepts.keys())
+
+        precision_scores = []
+        ndcg_scores = []
+        mrr_scores = []
+        recommended_courses = set()
+
+        for idx, user_id in enumerate(all_users):
+            train_courses = train_data.get(user_id, [])
+            test_courses = test_data.get(user_id, [])
+
+            if not train_courses or not test_courses:
+                continue
+
+            candidate_courses = [c for c in all_courses if c not in train_courses]
+            recommendations = model_func(user_id, train_courses, candidate_courses)
+            recommended_courses.update(recommendations)
+
+            precision_scores.append(precision_at_k(recommendations, test_courses, k))
+            ndcg_scores.append(ndcg_at_k(recommendations, test_courses, k))
+            mrr_scores.append(mrr(recommendations, test_courses))
+
+        catalog_coverage = len(recommended_courses) / len(all_courses)
+
+        return {
+            "precision_at_k": np.mean(precision_scores),
+            "precision_std": np.std(precision_scores),
+            "ndcg_at_k": np.mean(ndcg_scores),
+            "ndcg_std": np.std(ndcg_scores),
+            "mrr": np.mean(mrr_scores),
+            "mrr_std": np.std(mrr_scores),
+            "catalog_coverage": catalog_coverage,
+            "num_users": len(precision_scores)
+        }
+
+LUỒNG XỬ LÝ:
+
+1. Sample users (1000 users đầu tiên)
+
+2. Với mỗi user:
+   a) Lấy train_courses và test_courses
+   b) Tạo candidate_courses (chưa học)
+   c) Generate recommendations dùng model_func
+   d) Tính metrics: precision, ndcg, mrr
+   e) Track recommended_courses cho coverage
+
+3. Aggregate:
+   - Mean và std của mỗi metric
+   - Catalog coverage
+
+4. Return dict với tất cả metrics
+
+BƯỚC 7B.8: RUN EVALUATION
+-------------------------
+
+Hybrid Model:
+    print("\n1. Evaluating Hybrid Model...")
+
+    def hybrid_model_func(user_id, train_courses, candidate_courses):
+        return generate_hybrid_recommendations(...)
+
+    hybrid_results = evaluate_model(hybrid_model_func, sample_users=1000, k=10)
+
+    print(f"\nHybrid Model Results:")
+    print(f"  Precision@10: {hybrid_results['precision_at_k']:.4f} (+/- {hybrid_results['precision_std']:.4f})")
+    print(f"  NDCG@10: {hybrid_results['ndcg_at_k']:.4f} (+/- {hybrid_results['ndcg_std']:.4f})")
+    print(f"  MRR: {hybrid_results['mrr']:.4f} (+/- {hybrid_results['mrr_std']:.4f})")
+    print(f"  Catalog Coverage: {hybrid_results['catalog_coverage']:.2%}")
+
+KẾT QUẢ:
+    Hybrid Model Results:
+      Precision@10: 0.0987 (+/- 0.0664)
+      NDCG@10: 0.5813 (+/- 0.3797)
+      MRR: 0.5474 (+/- 0.4039)
+      Catalog Coverage: 38.11%
+
+DIỄN GIẢI:
+- Precision@10 = 9.87%: ~1/10 recommendations đúng
+- NDCG@10 = 58.13%: ranking ở mức trung bình-khá
+- MRR = 54.74%: first hit trung bình ở rank ~2
+- Coverage = 38.11%: recommend 38% catalog
+
+Pure ALS:
+    print("\n2. Evaluating Pure ALS...")
+
+    def als_model_func(user_id, train_courses, candidate_courses):
+        return generate_als_recommendations(...)
+
+    als_results = evaluate_model(als_model_func, sample_users=1000, k=10)
+
+KẾT QUẢ:
+    Pure ALS Results:
+      Precision@10: 0.1177 (+/- 0.0600)
+      NDCG@10: 0.7977 (+/- 0.3223)
+      MRR: 0.7935 (+/- 0.3485)
+      Catalog Coverage: 33.26%
+
+DIỄN GIẢI:
+- ALS tốt hơn Hybrid trên TẤT CẢ metrics
+- Precision cao hơn 16%
+- NDCG cao hơn 27%
+- MRR cao hơn 45%
+
+Popularity Baseline:
+    print("\n3. Evaluating Popularity Baseline...")
+
+KẾT QUẢ:
+    Popularity Baseline Results:
+      Precision@10: 0.0312 (+/- 0.0532)
+      NDCG@10: 0.1387 (+/- 0.2594)
+      MRR: 0.1192 (+/- 0.2514)
+      Catalog Coverage: 3.04%
+
+DIỄN GIẢI:
+- Rất tệ trên tất cả metrics
+- Coverage chỉ 3.04%: chỉ recommend 3% courses (popular ones)
+- Đây là baseline thấp nhất
+
+Content-Based Baseline:
+    print("\n4. Evaluating Content-Based Baseline...")
+
+KẾT QUẢ:
+    Content-Based Baseline Results:
+      Precision@10: 0.0216 (+/- 0.0421)
+      NDCG@10: 0.0926 (+/- 0.2057)
+      MRR: 0.0693 (+/- 0.1828)
+      Catalog Coverage: 69.56%
+
+DIỄN GIẢI:
+- Tệ nhất về Precision, NDCG, MRR
+- Coverage cao nhất (69.56%): recommend rất đa dạng
+- Trade-off: diversity vs accuracy
+
+BƯỚC 7B.9: SO SÁNH CÁC MÔ HÌNH
+------------------------------
+Code:
+    comparison_df = pd.DataFrame({
+        'Model': ['Hybrid', 'Pure ALS', 'Popularity', 'Content-Based'],
+        'Precision@10': [...],
+        'NDCG@10': [...],
+        'MRR': [...],
+        'Coverage': [...]
+    })
+
+    print(comparison_df.to_string(index=False, float_format="%.4f"))
+
+    improvement_precision = (hybrid_results['precision_at_k'] - als_results['precision_at_k']) / als_results['precision_at_k'] * 100
+    improvement_ndcg = (hybrid_results['ndcg_at_k'] - als_results['ndcg_at_k']) / als_results['ndcg_at_k'] * 100
+
+    print(f"\nHybrid vs Pure ALS:")
+    print(f"  Precision@10: {improvement_precision:+.1f}%")
+    print(f"  NDCG@10: {improvement_ndcg:+.1f}%")
+
+KẾT QUẢ:
+    ======================================================================
+    BASELINE COMPARISON SUMMARY
+    ======================================================================
+            Model  Precision@10  NDCG@10    MRR  Coverage
+           Hybrid        0.0987   0.5813 0.5474    0.3811
+         Pure ALS        0.1177   0.7977 0.7935    0.3326
+       Popularity        0.0312   0.1387 0.1192    0.0304
+    Content-Based        0.0216   0.0926 0.0693    0.6956
+
+    Hybrid vs Pure ALS:
+      Precision@10: -16.1%
+      NDCG@10: -27.1%
+
+NHẬN XÉT QUAN TRỌNG:
+- Pure ALS TỐT NHẤT về accuracy metrics
+- Hybrid đứng thứ 2, nhưng vẫn tốt hơn baselines
+- Popularity và Content-Based rất tệ
+- Coverage: Content-Based cao nhất, Popularity thấp nhất
+
+TẠI SAO HYBRID KHÔNG TỐT NHẤT?
+1. Các weights (0.35, 0.25, 0.20, 0.20) có thể chưa tối ưu
+2. Readiness score thấp (avg = 0.08 trong Step 7)
+3. Association rules chỉ có 327 rules (ít)
+4. Course prerequisites chỉ cover 179/887 courses
+
+CẢI THIỆN:
+- Tuning weights (grid search)
+- Thu thập thêm data cho readiness
+- Tăng số lượng association rules
+
+BƯỚC 7B.10: LƯU KẾT QUẢ
+-----------------------
+Code:
+    evaluation_results = {
+        "hybrid": hybrid_results,
+        "als": als_results,
+        "popularity": popularity_results,
+        "content_based": content_results,
+        "temporal_split": {
+            "train_users": len(train_data),
+            "test_users": len(test_data),
+            "train_interactions": sum(len(c) for c in train_data.values()),
+            "test_interactions": sum(len(c) for c in test_data.values())
+        },
+        "parameters": {...},
+        "fixes_applied": [
+            "ALS normalization: min-max scaling to [0,1]",
+            "R-score: loaded from R_matrix.csv",
+            "Readiness: returns 0 for courses without concepts",
+            "NDCG: fixed IDCG calculation"
+        ]
+    }
+
+    with open(f"{OUTPUT_PATH}/evaluation_results_fixed.pkl", "wb") as f:
+        pickle.dump(evaluation_results, f)
+
+    with open(f"{OUTPUT_PATH}/evaluation_results_fixed.json", "w") as f:
+        json.dump(evaluation_results, f, indent=2)
+
+OUTPUT FILES:
+- evaluation_results_fixed.pkl: Python object
+- evaluation_results_fixed.json: Human-readable
+
+================================================================================
+4. SO SÁNH VỚI STEP 7
+================================================================================
+
++------------------+------------------+------------------+
+| YẾU TỐ           | Step 7           | Step 7b          |
++------------------+------------------+------------------+
+| Mục tiêu         | Generate recs    | Evaluate recs    |
+| Split            | Không có         | Temporal 80/20   |
+| Metrics          | Coverage, expl   | Precision, NDCG  |
+|                  |                  | MRR, Coverage    |
+| Baselines        | Không            | 3 baselines      |
+| Sample           | 1000 users       | 1000 users       |
++------------------+------------------+------------------+
+
+STEP 7b BỔ SUNG:
+- Temporal split (proper evaluation protocol)
+- Chuẩn metrics cho recommendation systems
+- Baseline comparison
+- Statistical analysis (mean, std)
+
+================================================================================
+5. ỨNG DỤNG CỦA KẾT QUẢ
+================================================================================
+
+5.1. BÁO CÁO KHOA HỌC
+---------------------
+
+Kết quả Step 7b có thể dùng cho paper:
+- Table so sánh các models
+- Metrics chuẩn trong field
+- Proper evaluation protocol (temporal split)
+
+5.2. CHỌN MÔ HÌNH CHO PRODUCTION
+--------------------------------
+
+Dựa vào kết quả:
+- Pure ALS: tốt nhất về accuracy
+- Hybrid: tốt thứ 2, nhưng có explanations
+- Coverage vs Accuracy trade-off
+
+QUYẾT ĐỊNH:
+- Nếu cần accuracy: Pure ALS
+- Nếu cần explainability: Hybrid
+- Nếu cần diversity: Content-Based (nhưng accuracy thấp)
+
+5.3. HƯỚNG CẢI THIỆN
+-------------------
+
+Từ kết quả evaluation:
+- Hybrid không tốt bằng Pure ALS → cần tuning weights
+- Readiness thấp → cần cải thiện calculation
+- Coverage thấp → cần diversify recommendations
+
+================================================================================
+6. HẠN CHẾ VÀ LƯU Ý
+================================================================================
+
+6.1. VỀ SAMPLE SIZE
+-------------------
+- Chỉ evaluate 1000/11,385 users (~9%)
+- Có thể tăng lên toàn bộ users
+- Trade-off: thời gian vs độ chính xác
+
+6.2. VỀ TEMPORAL SPLIT
+----------------------
+- 80/20 là arbitrary
+- Có thể dùng 70/30 hoặc 90/10
+- Có thể dùng cross-validation
+
+6.3. VỀ METRICS
+---------------
+- Thiếu Recall@K (bổ sung cho Precision)
+- Thiếu MAP (Mean Average Precision)
+- Có thể thêm Diversity, Serendipity metrics
+
+6.4. VỀ BASELINES
+-----------------
+- Thiếu Neural Collaborative Filtering (NCF)
+- Thiếu Graph-based methods (dùng Step 4)
+- Có thể thêm SOTA models
+
+================================================================================
+7. TÓM TẮT
+================================================================================
+
+Step 7b: ĐÁNH GIÁ VỚI CHỈ SỐ CHÍNH XÁC với các đặc điểm:
+
+1. ĐẦU VÀO:
+   - 11,385 user sequences
+   - 887 course concepts
+   - ALS embeddings, association rules, prerequisites
+   - R_matrix scores
+
+2. XỬ LÝ CHÍNH:
+   - Temporal split 80/20 (train/test)
+   - Compute ALS normalization (min-max scaling)
+   - Evaluate 4 models: Hybrid, Pure ALS, Popularity, Content-Based
+   - Calculate metrics: Precision@10, NDCG@10, MRR, Coverage
+
+3. KẾT QUẢ (1000 users):
+   - Hybrid: Precision=0.0987, NDCG=0.5813, MRR=0.5474
+   - Pure ALS: Precision=0.1177, NDCG=0.7977, MRR=0.7935 (BEST)
+   - Popularity: Precision=0.0312, NDCG=0.1387, MRR=0.1192
+   - Content-Based: Precision=0.0216, NDCG=0.0926, MRR=0.0693
+
+4. SO SÁNH:
+   - Hybrid vs ALS: Precision -16.1%, NDCG -27.1%
+   - Hybrid tốt hơn baselines nhưng thua Pure ALS
+   - Coverage: Hybrid 38.11%, ALS 33.26%
+
+5. CÔNG THỨC:
+   - Precision@K = hits@K / K
+   - NDCG@K = DCG@K / IDCG@K
+   - MRR = 1/rank_of_first_hit
+   - Coverage = |recommended courses| / |all courses|
+
+6. OUTPUT FILES:
+   - evaluation_results_fixed.pkl
+   - evaluation_results_fixed.json
+
+7. ỨNG DỤNG:
+   - Báo cáo khoa học
+   - Chọn mô hình production
+   - Hướng cải thiện (tuning weights, improve readiness)
+
+================================================================================
+HẾT GIẢI THÍCH STEP 7B
+================================================================================
+
+File được tạo bởi: Assistant
+Ngày: 2026-05-02
+Ngôn ngữ: Tiếng Việt

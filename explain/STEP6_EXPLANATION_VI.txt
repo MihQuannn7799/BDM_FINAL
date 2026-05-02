@@ -1,0 +1,822 @@
+================================================================================
+STEP 6: ALS VỚI TEMPORAL DECAY - GIẢI THÍCH CHI TIẾT
+================================================================================
+
+DỰ ÁN: MOOCCubeX - Hệ thống học tập thích ứng trong MOOCs
+FILE: step6_temporal_als.ipynb
+VỊ TRÍ: scripts/notebooks/step6_temporal_als.ipynb
+
+================================================================================
+1. TỔNG QUAN VÀ MỤC ĐÍCH
+================================================================================
+
+Step 6 thực hiện huấn luyện mô hình COLLABORATIVE FILTERING sử dụng
+thuật toán ALS (Alternating Least Squares) với trọng số TEMPORAL DECAY
+(suy giảm theo thời gian) để tạo embeddings cho người dùng và khóa học.
+
+MỤC TIÊU CHÍNH:
+- Xây dựng ma trận rating với temporal-aware confidence
+- Huấn luyện ALS model để học user và course embeddings
+- Tạo ra các vector biểu diễn (embeddings) cho users và courses
+- Sinh gợi ý (recommendations) cho từng người dùng
+
+INPUT (ĐẦU VÀO):
+- user_sequences.json: Chuỗi khóa học từ Step 2
+- R_score: Điểm liên quan từ các steps trước
+
+OUTPUT (ĐẦU RA):
+- als_embeddings.pkl: User và course embeddings
+- als_recommendations.json: Top-k recommendations cho mỗi user
+
+TẠI SAO CẦN STEP 6?
+-------------------
+Các steps trước đã tạo:
+- Step 1-2: R_score và sequences
+- Step 3-4: Prerequisites và Knowledge Graph
+- Step 5: Association Rules
+
+Step 6 bổ sung khả năng COLLABORATIVE FILTERING:
+- Học biểu diễn latent (ngầm) của users và courses
+- Dự đoán rating cho courses chưa học
+- Gợi ý courses phù hợp dựa trên patterns học tập
+
+ỨNG DỤNG:
+- Gợi ý khóa học cá nhân hóa
+- Tìm courses tương tự
+- Cold-start recommendation (với thông tin bổ sung)
+
+================================================================================
+2. KHÁI NIỆM VÀ CÔNG THỨC CHÍNH
+================================================================================
+
+2.1. COLLABORATIVE FILTERING (LỌC CỘNG TÁC)
+-------------------------------------------
+
+Ý TƯỞNG:
+- Người dùng có hành vi tương tự → sẽ thích items tương tự
+- Không cần thông tin về nội dung (content), chỉ cần hành vi
+
+2 PHƯƠNG PHÁP CHÍNH:
+
+a) User-based CF:
+   - Tìm users giống nhau
+   - Gợi ý items mà users giống đã thích
+
+b) Item-based CF:
+   - Tìm items giống nhau
+   - Gợi ý items giống với items user đã thích
+
+STEP 6 DÙNG: MATRIX FACTORIZATION (ALS)
+- Biểu diễn users và items trong không gian latent
+- Dự đoán rating bằng tích vô hướng (dot product)
+
+2.2. MATRIX FACTORIZATION
+-------------------------
+
+Ý TƯỞNG:
+    R ≈ U × V^T
+
+Trong đó:
+- R: Rating matrix (users × courses)
+- U: User embeddings (users × rank)
+- V: Course embeddings (courses × rank)
+- rank: Số chiều latent (thường << số users/courses)
+
+VÍ DỤ:
+    R (11385 × 744) ≈ U (11385 × 100) × V^T (100 × 744)
+
+GIẢI THÍCH:
+- Thay vì lưu ma trận 11385×744 = 8.5 triệu entries
+- Chỉ cần lưu 11385×100 + 744×100 = 1.2 triệu parameters
+- Giảm 85% bộ nhớ
+- Học được patterns latent (không thấy được trong data)
+
+2.3. ALS (ALTERNATING LEAST SQUARES)
+------------------------------------
+
+Ý TƯỞNG:
+- Bài toán tối ưu: tìm U, V sao cho R ≈ U × V^T
+- Không thể giải trực tiếp (non-convex)
+- ALS giải bằng cách luân phiên:
+
+  Bước 1: Cố định V, tối ưu U (least squares)
+  Bước 2: Cố định U, tối ưu V (least squares)
+  Lặp lại cho đến khi hội tụ
+
+TẠI SAO GỌI LÀ "ALTERNATING"?
+- Vì luân phiên (alternate) giữa 2 bước
+- Mỗi bước là linear least squares (dễ giải)
+
+2.4. TEMPORAL DECAY (SUY GIẢM THEO THỜI GIAN)
+---------------------------------------------
+
+CÔNG THỨC:
+    temporal_decay(t) = exp(-(1 - normalized_position))
+    confidence = 1 + α × R_norm × temporal_decay
+
+Trong đó:
+- normalized_position = sequence_order / max_order
+- α (ALPHA) = 40: trọng số temporal
+- R_norm: R_score chuẩn hóa
+
+GIẢI THÍCH:
+- Courses học GẦN ĐÂY (sequence_order cao) → temporal_decay cao
+- Courses học XA (sequence_order thấp) → temporal_decay thấp
+- exp() tạo decay theo hàm mũ
+
+VÍ DỤ:
+User có 10 courses (max_order = 10):
+
+Course 1 (order=1, học sớm):
+- normalized = 1/10 = 0.1
+- decay = exp(-(1-0.1)) = exp(-0.9) = 0.407
+
+Course 10 (order=10, học gần đây):
+- normalized = 10/10 = 1.0
+- decay = exp(-(1-1.0)) = exp(0) = 1.0
+
+→ Course gần đây có weight CAO GẤP 2.5 lần
+
+TẠI SAO DÙNG TEMPORAL DECAY?
+- Hành vi gần đây phản ánh sở thích HIỆN TẠI tốt hơn
+- User có thể thay đổi hướng học theo thời gian
+- Giảm ảnh hưởng của hành vi xa trong quá khứ
+
+2.5. CONFIDENCE WEIGHT
+----------------------
+
+CÔNG THỨC:
+    confidence(u,c) = 1 + α × R_norm(u,c) × temporal_decay(t)
+
+SAU ĐÓ CHUẨN HÓA VỀ [0, 1]:
+    confidence_norm = (confidence - min) / (max - min)
+
+Ý NGHĨA:
+- confidence = 1: không có thông tin (baseline)
+- confidence > 1: có thông tin (R_norm cao, temporal cao)
+- α = 40: khuếch đại ảnh hưởng của R_norm và temporal
+
+VÍ DỤ:
+R_norm = 1.0, temporal_decay = 1.0, α = 40:
+- confidence = 1 + 40 × 1.0 × 1.0 = 41
+- Sau normalize: confidence_norm = 1.0 (max)
+
+R_norm = 0.5, temporal_decay = 0.5, α = 40:
+- confidence = 1 + 40 × 0.5 × 0.5 = 11
+- Sau normalize: confidence_norm ≈ 0.25
+
+2.6. REGULARIZATION
+-------------------
+
+CÔNG THỨC LOSS:
+    Loss = Σ(rating - pred)² + λ × (||U||² + ||V||²)
+
+Trong đó:
+- Σ(rating - pred)²: Reconstruction error
+- λ (REG_PARAM): Regularization parameter
+- ||U||², ||V||²: Norm của embeddings (tránh overfitting)
+
+TẠI SAO CẦN REGULARIZATION?
+- Tránh embeddings có giá trị quá lớn
+- Giúp model tổng quát hóa tốt hơn
+- Tương đương L2 regularization trong regression
+
+================================================================================
+3. GIẢI THÍCH TỪNG BƯỚC CODE - TẠI SAO LẠI LÀM NHƯ VẬY?
+================================================================================
+
+BƯỚC 6.1: KHỞI TẠO VÀ CẤU HÌNH
+------------------------------
+Code:
+    import json
+    import pickle
+    import numpy as np
+    import pandas as pd
+    from collections import defaultdict
+    from datetime import datetime
+    import math
+
+    RANK = 100
+    ALPHA = 40
+    MAX_ITER = 12
+    REG_PARAM = 0.1
+    REFERENCE_DATE = datetime(2021, 1, 1)
+
+TẠI SAO CÁC THAM SỐ NÀY?
+
+a) RANK = 100:
+   - Số chiều latent cho embeddings
+   - 100 là phổ biến cho recommendation systems
+   - Đủ lớn để capture patterns, đủ nhỏ để không overfit
+   - Có thể tăng lên 128-256 nếu data lớn hơn
+
+b) ALPHA = 40:
+   - Trọng số cho temporal confidence
+   - 40 là giá trị empirically tốt
+   - Cao hơn → temporal quan trọng hơn
+   - Thấp hơn → R_norm quan trọng hơn
+
+c) MAX_ITER = 12:
+   - Số vòng lặp ALS
+   - 12 iterations thường đủ để hội tụ
+   - Nhiều hơn → chậm, ít hơn → chưa hội tụ
+
+d) REG_PARAM = 0.1:
+   - Regularization strength
+   - 0.1 là giá trị phổ biến
+   - Cao hơn → embeddings nhỏ hơn (ít overfit)
+   - Thấp hơn → embeddings lớn hơn (có thể overfit)
+
+BƯỚC 6.2: LOAD VÀ PARSE DỮ LIỆU
+-------------------------------
+Code:
+    with open(f"{OUTPUT_PATH}/user_sequences.json", "r") as f:
+        user_sequences = json.load(f)
+
+    records = []
+    for record in user_sequences:
+        user_id = record["user_id"]
+        sequence = record["sequence"]
+
+        for item in sequence:
+            sequence_order = item[0]
+            course_id = item[1]
+            r_score = item[2]
+            passed = item[3]
+
+            records.append({
+                'user_id': user_id,
+                'course_id': course_id,
+                'sequence_order': sequence_order,
+                'R_score': r_score,
+                'passed': passed
+            })
+
+    df = pd.DataFrame(records)
+
+TẠI SAO PARSE THÀNH DataFrame?
+- DataFrame dễ xử lý hơn list of dicts
+- Có thể dùng groupby, transform, vectorized operations
+- Pandas tối ưu cho các phép tính trên cột
+
+KẾT QUẢ:
+- 71,479 records
+- 11,385 unique users
+- 744 unique courses
+
+BƯỚC 6.3: TÍNH TOÁN TEMPORAL DECAY
+----------------------------------
+Code:
+    def temporal_decay(sequence_order, max_order):
+        normalized = sequence_order / max_order if max_order > 0 else 0.5
+        decay = math.exp(-(1 - normalized))
+        return max(decay, 0.2)
+
+TẠI SAO DÙNG exp()?
+- Hàm exp tạo decay "mượt" (smooth)
+- exp(-x) giảm nhanh khi x tăng
+- Đạo hàm của exp cũng là exp → dễ optimize
+
+TẠI SAO max(decay, 0.2)?
+- Floor ở 0.2 để tránh decay quá thấp
+- Courses học sớm vẫn có một chút weight
+- Tránh mất hoàn toàn thông tin cũ
+
+BƯỚC 6.4: TÍNH TOÁN R_NORM
+--------------------------
+Code:
+    def compute_r_norm(df):
+        user_max_r = df.groupby('user_id')['R_score'].transform('max')
+        df['R_norm'] = np.where(user_max_r > 0, df['R_score'] / user_max_r, 0)
+        return df
+
+TẠI SAO CHUẨN HÓA THEO TỪNG USER?
+- Mỗi user có thang R_score khác nhau
+- User A: R_score cao nhất = 0.9
+- User B: R_score cao nhất = 0.5
+- Chuẩn hóa → cả 2 đều có max = 1.0
+- Công bằng hơn khi so sánh giữa users
+
+VÍ DỤ:
+User U_173698 có R_score = 0.328 cho tất cả courses:
+- user_max_r = 0.328
+- R_norm = 0.328 / 0.328 = 1.0
+
+BƯỚC 6.5: TÍNH TOÁN CONFIDENCE
+------------------------------
+Code:
+    def compute_confidence(df, ALPHA):
+        df['confidence'] = 1 + ALPHA * df['R_norm'] * df['temporal_decay']
+        df['confidence'] = (df['confidence'] - df['confidence'].min()) /
+                           (df['confidence'].max() - df['confidence'].min())
+        return df
+
+TẠI SAO CÔNG THỨC NÀY?
+- 1 + ... : baseline confidence (không có thông tin)
+- ALPHA * R_norm * temporal_decay: bonus confidence
+- Normalize về [0, 1]: dễ optimize cho ALS
+
+VÍ DỤ:
+R_norm = 1.0, temporal_decay = 1.0, ALPHA = 40:
+- confidence_raw = 1 + 40 × 1.0 × 1.0 = 41
+- Nếu min = 1, max = 41:
+- confidence_norm = (41-1)/(41-1) = 1.0
+
+KẾT QUẢ:
+    user_id   course_id  R_norm  temporal_decay  confidence
+    U_173698  C_696908   1.0    0.606531        0.377239
+    U_173698  C_1756060  1.0    1.000000        1.000000
+    U_25846   C_682344   1.0    0.455794        0.138661
+
+DIỄN GIẢI:
+- U_173698 học C_1756060 sau (temporal = 1.0) → confidence = 1.0
+- U_173698 học C_696908 sớm (temporal = 0.607) → confidence = 0.377
+- U_25846 học C_682344 sớm → confidence thấp hơn
+
+BƯỚC 6.6: TẠO ID MAPPINGS
+-------------------------
+Code:
+    unique_users = df['user_id'].unique()
+    unique_courses = df['course_id'].unique()
+
+    user_to_idx = {user: idx for idx, user in enumerate(unique_users)}
+    course_to_idx = {course: idx for idx, course in enumerate(unique_courses)}
+
+    idx_to_user = {idx: user for user, idx in user_to_idx.items()}
+    idx_to_course = {idx: course for course, idx in course_to_idx.items()}
+
+TẠI SAO CẦN MAPPINGS?
+- User IDs và Course IDs là strings (U_173698, C_696908)
+- Matrix operations cần integer indices (0, 1, 2, ...)
+- Mappings giúp chuyển đổi qua lại
+
+KÍCH THƯỚC:
+- 11,385 users → indices 0-11384
+- 744 courses → indices 0-743
+
+BƯỚC 6.7: XÂY DỰNG RATING MATRIX
+--------------------------------
+Code:
+    ratings = {}  # (user_idx, course_idx) -> confidence
+
+    for _, row in df.iterrows():
+        user_idx = user_to_idx[row['user_id']]
+        course_idx = course_to_idx[row['course_id']]
+        ratings[(user_idx, course_idx)] = row['confidence']
+
+    user_ratings = defaultdict(dict)
+    for (u, c), rating in ratings.items():
+        user_ratings[u][c] = rating
+
+    course_ratings = defaultdict(dict)
+    for (u, c), rating in ratings.items():
+        course_ratings[c][u] = rating
+
+TẠI SAO DÙNG SPARSE REPRESENTATION?
+- Rating matrix rất thưa (sparse)
+- Density = 0.8439% (chỉ 0.84% entries có giá trị)
+- Lưu toàn bộ ma trận → lãng phí memory
+- Dictionary chỉ lưu entries có giá trị
+
+TẠI SAO 2 CẤU TRÚC (user_ratings, course_ratings)?
+- user_ratings: dùng khi update user embeddings
+- course_ratings: dùng khi update item embeddings
+- Tránh phải search toàn bộ ratings mỗi lần
+
+KẾT QUẢ:
+- 71,479 rating entries
+- Avg 6.28 ratings per user
+- Avg 96.07 ratings per course
+
+BƯỚC 6.8: KHỞI TẠO EMBEDDINGS
+-----------------------------
+Code:
+    def initialize_embeddings(n_users, n_items, rank):
+        np.random.seed(42)
+        user_emb = np.random.normal(0, 0.01, (n_users, rank))
+        item_emb = np.random.normal(0, 0.01, (n_items, rank))
+        user_emb = np.abs(user_emb)
+        item_emb = np.abs(item_emb)
+        return user_emb, item_emb
+
+TẠI SAO DÙNG normal(0, 0.01)?
+- Khởi tạo với giá trị nhỏ gần 0
+- std = 0.01 để tránh gradients quá lớn
+- Mean = 0 để không bias về hướng nào
+
+TẠI SAO np.random.seed(42)?
+- Đảm bảo reproducibility (chạy lại ra cùng kết quả)
+- 42 là số may mắn trong programming
+
+TẠI SAO np.abs() (làm dương)?
+- ALS với implicit feedback thường dùng non-negative embeddings
+- Diễn giải dễ hơn: embedding dimensions là "mức độ"
+- Tránh cancelation khi dot product
+
+KÍCH THƯỚC:
+- user_emb: (11385, 100)
+- item_emb: (744, 100)
+
+BƯỚC 6.9: UPDATE USER EMBEDDING
+-------------------------------
+Code:
+    def update_user_embedding(user_idx, user_emb, item_emb, user_ratings, reg_param, rank):
+        rated_items = user_ratings[user_idx]
+
+        if len(rated_items) == 0:
+            return user_emb[user_idx]
+
+        # Build matrix A và vector b
+        n_ratings = len(rated_items)
+        A = np.zeros((n_ratings, rank))
+        b = np.zeros(n_ratings)
+
+        for i, (item_idx, rating) in enumerate(rated_items.items()):
+            A[i] = item_emb[item_idx]
+            b[i] = rating
+
+        # Add regularization
+        A_reg = np.vstack([A, np.sqrt(reg_param) * np.eye(rank)])
+        b_reg = np.hstack([b, np.zeros(rank)])
+
+        # Solve least squares
+        solution = np.linalg.lstsq(A_reg, b_reg, rcond=None)[0]
+        return np.maximum(solution, 0)
+
+GIẢI THÍCH TOÁN:
+
+MỤC TIÊU: Tìm u (user embedding) sao cho:
+    min Σ(rating - u·v)² + λ||u||²
+
+với v là item embeddings (cố định)
+
+GIẢI PHÁP: Least squares
+- A: matrix của item embeddings (rows = items đã rate)
+- b: vector của ratings
+- Giải: min ||A·u - b||²
+
+REGULARIZATION:
+- Thêm λ||u||² vào loss
+- Tương đương thêm rows vào A và b:
+  + A_reg = [A; √λ·I]
+  + b_reg = [b; 0]
+- I là identity matrix
+
+VÍ DỤ:
+User U đã rate 3 items với ratings [0.8, 0.5, 0.9]:
+- A = [[v1], [v2], [v3]]  (3×100 matrix)
+- b = [0.8, 0.5, 0.9]    (vector)
+- A_reg = [[v1], [v2], [v3], [√0.1·I]]  (7×100 matrix)
+- b_reg = [0.8, 0.5, 0.9, 0, 0, ..., 0]  (vector 107)
+- Giải least squares → u mới
+
+NON-NEGATIVE:
+- np.maximum(solution, 0) đảm bảo embeddings >= 0
+
+BƯỚC 6.10: UPDATE ITEM EMBEDDING
+--------------------------------
+Code:
+    def update_item_embedding(item_idx, user_emb, item_emb, item_ratings, reg_param, rank):
+        rated_users = item_ratings[item_idx]
+
+        if len(rated_users) == 0:
+            return item_emb[item_idx]
+
+        n_ratings = len(rated_users)
+        A = np.zeros((n_ratings, rank))
+        b = np.zeros(n_ratings)
+
+        for i, (user_idx, rating) in enumerate(rated_users.items()):
+            A[i] = user_emb[user_idx]
+            b[i] = rating
+
+        A_reg = np.vstack([A, np.sqrt(reg_param) * np.eye(rank)])
+        b_reg = np.hstack([b, np.zeros(rank)])
+
+        solution = np.linalg.lstsq(A_reg, b_reg, rcond=None)[0]
+        return np.maximum(solution, 0)
+
+TƯƠNG TỰ USER EMBEDDING:
+- Chỉ khác: update item embedding thay vì user embedding
+- A: matrix của user embeddings
+- b: vector của ratings
+
+BƯỚC 6.11: TRAIN ALS
+--------------------
+Code:
+    def train_als(user_ratings, course_ratings, n_users, n_courses, rank, max_iter, reg_param):
+        print(f"Training ALS: rank={rank}, max_iter={max_iter}")
+
+        user_emb, item_emb = initialize_embeddings(n_users, n_courses, rank)
+
+        for iteration in range(max_iter):
+            # Update user embeddings
+            for u in range(n_users):
+                user_emb[u] = update_user_embedding(u, user_emb, item_emb, user_ratings, reg_param, rank)
+
+            # Update item embeddings
+            for c in range(n_courses):
+                item_emb[c] = update_item_embedding(c, user_emb, item_emb, course_ratings, reg_param, rank)
+
+            # Calculate loss
+            if (iteration + 1) % 5 == 0:
+                loss = 0
+                count = 0
+                for (u, c), rating in ratings.items():
+                    pred = np.dot(user_emb[u], item_emb[c])
+                    loss += (rating - pred) ** 2
+                    count += 1
+                loss += reg_param * (np.sum(user_emb ** 2) + np.sum(item_emb ** 2))
+                rmse = np.sqrt(loss / count)
+                print(f"  Iteration {iteration + 1}/{max_iter}, RMSE: {rmse:.4f}")
+
+        return user_emb, item_emb
+
+LUỒNG HUẤN LUYỆN:
+
+1. Khởi tạo embeddings ngẫu nhiên
+
+2. Lặp MAX_ITER lần:
+   a) Update TẤT CẢ user embeddings (cố định item embeddings)
+   b) Update TẤT CẢ item embeddings (cố định user embeddings)
+   c) Tính RMSE mỗi 5 iterations để theo dõi hội tụ
+
+3. Trả về embeddings cuối cùng
+
+RMSE (Root Mean Square Error):
+    RMSE = √(Σ(rating - pred)² / n)
+
+- RMSE thấp → predictions sát với ratings thực tế
+- RMSE cao → predictions chưa tốt
+
+KẾT QUẢ:
+    Starting ALS training...
+    Training ALS: rank=100, max_iter=12
+      Iteration 5/12, RMSE: 0.2711
+      Iteration 10/12, RMSE: 0.2850
+
+    Training complete!
+    User embeddings shape: (11385, 100)
+    Course embeddings shape: (744, 100)
+
+NHẬN XÉT:
+- RMSE giảm nhẹ từ iteration 5 đến 10
+- RMSE = 0.285 là khá tốt cho implicit feedback
+- Model đã hội tụ
+
+BƯỚC 6.12: MAP EMBEDDINGS VỀ IDs
+--------------------------------
+Code:
+    user_embeddings_mapped = {
+        idx_to_user[idx]: emb.tolist()
+        for idx, emb in enumerate(user_embeddings)
+    }
+
+    course_embeddings_mapped = {
+        idx_to_course[idx]: emb.tolist()
+        for idx, emb in enumerate(course_embeddings)
+    }
+
+TẠI SAO MAP VỀ IDs?
+- Embeddings lưu dưới dạng numpy arrays với indices
+- Ứng dụng cần dùng original IDs (U_173698, C_696908)
+- tolist() chuyển numpy array → Python list (dễ serialize)
+
+KẾT QUẢ:
+- 11,385 user embeddings
+- 744 course embeddings
+- Mỗi embedding: 100 dimensions
+
+BƯỚC 6.13: GENERATE RECOMMENDATIONS
+-----------------------------------
+Code:
+    def generate_recommendations(user_idx, user_emb, item_emb, user_ratings, top_k=10):
+        rated_courses = set(user_ratings[user_idx].keys())
+
+        scores = np.dot(item_emb, user_emb[user_idx])
+
+        for c in rated_courses:
+            scores[c] = -np.inf
+
+        top_indices = np.argsort(scores)[::-1][:top_k]
+
+        return [(idx, float(scores[idx])) for idx in top_indices if scores[idx] > -np.inf]
+
+CÁCH HOẠT ĐỘNG:
+
+1. Lấy danh sách courses đã học:
+   rated_courses = {courses user đã rate}
+
+2. Tính scores cho TẤT CẢ courses:
+   scores = item_emb × user_emb
+   (dot product cho mỗi course)
+
+3. Mask courses đã học:
+   scores[c] = -np.inf (sẽ không được chọn)
+
+4. Lấy top-k scores cao nhất:
+   np.argsort(scores)[::-1][:top_k]
+
+5. Trả về courses chưa học với scores cao nhất
+
+TẠI SAO DÙNG DOT PRODUCT?
+-ALS học sao cho dot product ≈ rating
+- Dot product cao → user sẽ thích course đó
+- Fast computation: matrix multiplication
+
+KẾT QUẢ:
+    Generated recommendations for 11,385 users
+
+    Example recommendations for U_173698:
+      C_697821: 1.3733
+      C_696841: 1.2623
+      C_677236: 1.2595
+      C_677049: 1.2413
+      C_697791: 1.1420
+
+DIỄN GIẢI:
+- C_697821 có als_score cao nhất (1.37) → gợi ý đầu tiên
+- Scores > 1: predictions cao hơn trung bình
+- User này chưa học các courses này → được gợi ý
+
+BƯỚC 6.14: LƯU KẾT QUẢ
+----------------------
+Code:
+    embeddings_data = {
+        "user_embeddings": user_embeddings_mapped,
+        "course_embeddings": course_embeddings_mapped,
+        "als_params": {
+            "rank": RANK,
+            "alpha": ALPHA,
+            "max_iter": MAX_ITER,
+            "reg_param": REG_PARAM
+        },
+        "user_to_idx": user_to_idx,
+        "course_to_idx": course_to_idx
+    }
+
+    with open(f"{OUTPUT_PATH}/als_embeddings.pkl", "wb") as f:
+        pickle.dump(embeddings_data, f)
+
+    with open(f"{OUTPUT_PATH}/als_recommendations.json", "w") as f:
+        json.dump(recommendations, f, indent=2)
+
+OUTPUT FILES:
+
+a) als_embeddings.pkl:
+   - User embeddings (11,385 × 100)
+   - Course embeddings (744 × 100)
+   - Parameters (rank, alpha, max_iter, reg_param)
+   - Mappings (user_to_idx, course_to_idx)
+   - Dùng để: load model, tiếp tục huấn luyện, inference
+
+b) als_recommendations.json:
+   - Top-10 recommendations cho mỗi user
+   - Format: {user_id: [{course_id, als_score}, ...]}
+   - Dùng để: hiển thị cho người dùng
+
+================================================================================
+4. ỨNG DỤNG CỦA ALS EMBEDDINGS
+================================================================================
+
+4.1. GỢI Ý CÁ NHÂN HÓA
+----------------------
+
+Dùng generate_recommendations() để tạo top-k courses cho mỗi user.
+
+4.2. TÌM COURSES TƯƠNG TỰ
+-------------------------
+
+Dùng course embeddings để tìm courses giống nhau:
+- Cosine similarity: cos(v1, v2) = (v1·v2) / (||v1|| × ||v2||)
+- Courses có embeddings gần nhau → tương tự
+
+VÍ DỤ:
+    def find_similar_courses(course_id, course_embeddings, top_k=5):
+        emb = course_embeddings[course_id]
+        similarities = {}
+        for c, e in course_embeddings.items():
+            if c != course_id:
+                sim = cosine_similarity(emb, e)
+                similarities[c] = sim
+        return sorted(similarities.items(), key=lambda x: x[1], reverse=True)[:top_k]
+
+4.3. TÌM USERS TƯƠNG TỰ
+-----------------------
+
+Dùng user embeddings để tìm users giống nhau:
+- Users có embeddings gần → có hành vi tương tự
+- Có thể dùng cho user-based collaborative filtering
+
+4.4. VISUALIZATION
+------------------
+
+Dùng PCA/t-SNE để giảm chiều embeddings từ 100 → 2D:
+- Visualize clusters của courses
+- Xem users phân bố thế nào
+
+================================================================================
+5. SO SÁNH VỚI CÁC STEPS TRƯỚC
+================================================================================
+
++------------------+------------------+------------------+------------------+
+| YẾU TỐ           | STEP 3           | STEP 4           | STEP 5           | STEP 6           |
++------------------+------------------+------------------+------------------+------------------+
+| Phương pháp      | Probability      | Graph-based      | Association      | Matrix           |
+|                  | (Pass/Fail)      | (concept+time)   | Rules (Apriori)  | Factorization    |
++------------------+------------------+------------------+------------------+------------------+
+| Output           | Prereq pairs     | Knowledge Graph  | Rules            | Embeddings       |
++------------------+------------------+------------------+------------------+------------------+
+| Cá nhân hóa      | Không            | Không            | Không            | Có               |
++------------------+------------------+------------------+------------------+------------------+
+| Gợi ý            | Path planning    | Graph traversal  | Rule-based       | Collaborative    |
++------------------+------------------+------------------+------------------+------------------+
+
+ĐIỂM MẠNH CỦA STEP 6:
+- Cá nhân hóa cho từng user
+- Học được patterns latent (không thấy trong data)
+- Scalable cho data lớn
+
+ĐIỂM YẾU CỦA STEP 6:
+- Không giải thích được (black box)
+- Cần nhiều data để học tốt
+- Cold-start problem (user/course mới)
+
+================================================================================
+6. HẠN CHẾ VÀ LƯU Ý
+================================================================================
+
+6.1. VỀ THAM SỐ
+---------------
+- RANK, ALPHA, MAX_ITER, REG_PARAM là arbitrary
+- Cần tuning (grid search, cross-validation) để tìm tham số tốt
+- Có thể dùng validation set để evaluate
+
+6.2. VỀ COLD-START
+------------------
+- User mới (chưa có ratings) → không có embeddings
+- Course mới (chưa có ratings) → không có embeddings
+- Cần hybrid approach (kết hợp content-based)
+
+6.3. VỀ SCALABILITY
+-------------------
+- ALS có độ phức tạp O(n × m × rank × iter)
+- 11,385 users × 744 courses × 100 rank × 12 iter ≈ 10^10 operations
+- Có thể chậm → cần optimization (parallel, sparse)
+
+6.4. VỀ TEMPORAL DECAY
+----------------------
+- Công thức temporal_decay đơn giản (chỉ dựa vào sequence_order)
+- Không xét khoảng cách thời gian thực (days)
+- Có thể cải thiện với datetime thực tế
+
+================================================================================
+7. TÓM TẮT
+================================================================================
+
+Step 6: ALS VỚI TEMPORAL DECAY với các đặc điểm:
+
+1. ĐẦU VÀO:
+   - 71,479 ratings từ 11,385 users và 744 courses
+   - R_score và temporal information từ Step 2
+
+2. XỬ LÝ CHÍNH:
+   - Tính temporal decay dựa trên sequence order
+   - Tính confidence = 1 + α × R_norm × temporal_decay
+   - ALS training: luân phiên update user và item embeddings
+   - Generate recommendations cho mỗi user
+
+3. THAM SỐ:
+   - RANK = 100 (embedding dimension)
+   - ALPHA = 40 (temporal weight)
+   - MAX_ITER = 12 (số vòng lặp)
+   - REG_PARAM = 0.1 (regularization)
+
+4. KẾT QUẢ:
+   - User embeddings: (11,385 × 100)
+   - Course embeddings: (744 × 100)
+   - RMSE: 0.285
+   - Recommendations cho 11,385 users
+
+5. CÔNG THỨC:
+   - temporal_decay = exp(-(1 - normalized_position))
+   - confidence = 1 + α × R_norm × temporal_decay
+   - R ≈ U × V^T (matrix factorization)
+   - ALS: luân phiên update U và V
+
+6. OUTPUT FILES:
+   - als_embeddings.pkl
+   - als_recommendations.json
+
+7. ỨNG DỤNG:
+   - Gợi ý cá nhân hóa
+   - Tìm courses/users tương tự
+   - Visualization
+
+================================================================================
+HẾT GIẢI THÍCH STEP 6
+================================================================================
+
+File được tạo bởi: Assistant
+Ngày: 2026-05-01
+Ngôn ngữ: Tiếng Việt

@@ -1,0 +1,608 @@
+================================================================================
+STEP 3: KHAI PHÁ TIÊN QUYẾT GIỮA CÁC KHÓA HỌC - GIẢI THÍCH CHI TIẾT
+================================================================================
+
+DỰ ÁN: MOOCCubeX - Hệ thống học tập thích ứng trong MOOCs
+FILE: step3_course_prerequisites.ipynb
+VỊ TRÍ: scripts/notebooks/step3_course_prerequisites.ipynb
+
+================================================================================
+1. TỔNG QUAN VÀ MỤC ĐÍCH
+================================================================================
+
+Step 3 thực hiện KHAI PHÁ QUAN HỆ TIÊN QUYẾT (prerequisite mining) giữa các
+khóa học dựa trên dữ liệu hành vi thực tế của người học.
+
+MỤC TIÊU CHÍNH:
+- Tìm các cặp khóa học (A, B) mà A là tiên quyết của B
+- Dựa trên 2 yếu tố: THỨ TỰ THỜI GIAN và TỶ LỆ THÀNH CÔNG
+- Tính điểm "strength" (độ mạnh) cho mỗi quan hệ tiên quyết
+
+INPUT (ĐẦU VÀO):
+- user_sequences_course_json: Chuỗi khóa học từ Step 2
+- Bao gồm: course_id, sequence_order, R_score, passed
+
+OUTPUT (ĐẦU RA):
+- course_prerequisites.parquet: Danh sách các cặp tiên quyết
+- course_prerequisites.json: Định dạng JSON cho ứng dụng
+- course_prerequisites.pkl: Định dạng pickle cho Python
+
+TẠI SAO CẦN STEP 3?
+-------------------
+Trong giáo dục, tiên quyết là khái niệm quan trọng:
+- "Giải tích 1" → tiên quyết của "Giải tích 2"
+- "Lập trình cơ bản" → tiên quyết của "Cấu trúc dữ liệu"
+
+Nhưng làm sao biết được điều này từ dữ liệu?
+- Step 3 phân tích hành vi thực tế: user học course A TRƯỚC, rồi học B
+- Nếu user PASS A → có xu hướng PASS B không?
+- Nếu có → A có thể là tiên quyết của B
+
+ỨNG DỤNG:
+- Gợi ý lộ trình học tập đúng thứ tự
+- Cảnh báo user chưa học tiên quyết
+- Tự động xây dựng curriculum từ data
+
+================================================================================
+2. CÔNG THỨC VÀ LOGIC CHÍNH
+================================================================================
+
+2.1. LUẬT TIÊN QUYẾT
+--------------------
+
+Rule: Course A → Course B nếu:
+    P(pass B | pass A) >= threshold
+
+DIỄN GIẢI:
+- Xác suất pass B KHI BIẾT đã pass A phải đủ cao
+- Nếu P(pass B | pass A) = 0.8 → 80% users pass A cũng pass B
+- Ngưỡng threshold = 0.4 (có thể điều chỉnh)
+
+2.2. CÁC NGƯỠNG (THRESHOLDS)
+----------------------------
+
+Code định nghĩa:
+    MIN_SUCCESS_RATE = 0.4      # P(pass B | pass A) >= 0.4
+    MIN_SUPPORT = 20            # Ít nhất 20 users
+    W_TEMPORAL = 0.6            # Trọng số thời gian
+    W_SUCCESS = 0.4             # Trọng số thành công
+
+TẠI SAO CHỌN CÁC GIÁ TRỊ NÀY?
+
+a) MIN_SUCCESS_RATE = 0.4:
+   - Ngưỡng tối thiểu để coi là có quan hệ
+   - 40% không phải cao, nhưng đủ để loại bỏ quan hệ ngẫu nhiên
+   - Có thể tăng lên 0.5-0.6 nếu muốn quan hệ chắc chắn hơn
+
+b) MIN_SUPPORT = 20:
+   - Quan hệ phải được ủng hộ bởi ít nhất 20 users
+   - Loại bỏ các quan hệ "hiếm" (chỉ 1-2 users)
+   - Đảm bảo thống kê đáng tin cậy
+
+c) W_TEMPORAL = 0.6, W_SUCCESS = 0.4:
+   - Thời gian (60%) quan trọng hơn thành công (40%)
+   - Vì: Nếu A luôn học trước B → có thể là tiên quyết
+   - Thành công bổ sung: nếu pass A → dễ pass B hơn
+
+2.3. CÔNG THỨC TÍNH STRENGTH
+----------------------------
+
+    strength = 0.6 × P_temporal + 0.4 × P_success
+
+Trong đó:
+- P_temporal = 1.0 (luôn = 1 vì đã là cặp thời gian)
+- P_success = success_count / mastery_count
+
+GIẢI THÍCH:
+- P_temporal: Xác suất A học trước B
+  + Vì đã filter temporal pairs → luôn = 1.0
+
+- P_success: Xác suất pass B khi đã pass A
+  + success_count: số users pass CẢ A và B
+  + mastery_count: số users pass A (bất kể B)
+  + P_success = success / mastery
+
+VÍ DỤ:
+- 100 users học A trước B
+- 50 users pass A (mastery_count = 50)
+- 40 users pass cả A và B (success_count = 40)
+- P_success = 40/50 = 0.8
+- strength = 0.6×1.0 + 0.4×0.8 = 0.92
+
+================================================================================
+3. GIẢI THÍCH TỪNG BƯỚC CODE - TẠI SAO LẠI LÀM NHƯ VẬY?
+================================================================================
+
+BƯỚC 3.1: KHỞI TẠO SPARK
+------------------------
+Code:
+    spark = SparkSession.builder \
+        .appName("Step3_CoursePrerequisites") \
+        .config("spark.driver.memory", "12g") \
+        .config("spark.sql.adaptive.enabled", "true") \
+        .getOrCreate()
+
+TƯƠNG TỰ STEP 2:
+- spark.sql.adaptive.enabled = true: Tự động tối ưu query
+- 12GB RAM: Xử lý dữ liệu lớn
+
+NGƯỠNG ĐƯỢC ĐỊNH NGHĨA:
+- MIN_SUCCESS_RATE = 0.4
+- MIN_SUPPORT = 20
+- W_TEMPORAL = 0.6
+- W_SUCCESS = 0.4
+
+BƯỚC 3.2: LOAD COURSE SEQUENCES TỪ STEP 2
+-----------------------------------------
+Code:
+    user_seq = spark.read.json(f"{OUTPUT_PATH}/user_sequences_course_json")
+
+    courses_df = user_seq.select(
+        "user_id",
+        explode("sequence").alias("course")
+    ).select(
+        "user_id",
+        col("course.course_id").alias("course_id"),
+        col("course.sequence_order").alias("order"),
+        col("course.R_score").alias("R_score"),
+        col("course.passed").alias("passed")
+    )
+
+TẠI SAO DÙNG explode()?
+- user_sequences có format: mỗi user = 1 row với sequence (mảng)
+- explode() biến mảng thành nhiều rows
+- Mỗi row = một course trong sequence của user
+
+VÍ DỤ:
+Trước:
+  user_id = U_101079
+  sequence = [
+    {course_id: C_696954, order: 1, R_score: 0.307, passed: 0},
+    {course_id: C_682458, order: 2, R_score: 0.307, passed: 0},
+    ...
+  ]
+
+Sau explode:
+  (U_101079, C_696954, 1, 0.307, 0)
+  (U_101079, C_682458, 2, 0.307, 0)
+  ...
+
+TẠI SAO CACHE()?
+- courses_df được dùng nhiều lần (tạo pairs, thống kê)
+- Cache() tránh đọc lại file
+- Tăng tốc độ xử lý
+
+KẾT QUẢ:
+- 11,385 users
+- 71,479 total courses (sau explode)
+
+BƯỚC 3.3: TẠO CÁC CẶP KHÓA HỌC (COURSE PAIRS)
+---------------------------------------------
+Code:
+    c1 = courses_df.select(
+        col("user_id"),
+        col("course_id").alias("course_a"),
+        col("order").alias("order_a"),
+        col("passed").alias("passed_a"),
+        col("R_score").alias("R_score_a")
+    )
+
+    c2 = courses_df.select(
+        col("user_id"),
+        col("course_id").alias("course_b"),
+        col("order").alias("order_b"),
+        col("passed").alias("passed_b"),
+        col("R_score").alias("R_score_b")
+    )
+
+    pairs = c1.join(
+        c2,
+        (c1.user_id == c2.user_id) & (c1.order_a < c2.order_b)
+    )
+
+TẠI SAO SELF-JOIN?
+- Cần tạo tất cả cặp (A, B) mà A học TRƯỚC B
+- Self-join: join bảng với chính nó
+- Điều kiện: cùng user_id VÀ order_a < order_b
+
+VÍ DỤ:
+User U_1 có sequence: [A, B, C] (order: 1, 2, 3)
+
+Sau self-join:
+  (A, B) vì 1 < 2
+  (A, C) vì 1 < 3
+  (B, C) vì 2 < 3
+
+→ Tạo ra TẤT CẢ cặp có thứ tự
+
+TẠI SAO CHỈ GIỮ order_a < order_b?
+- Tiên quyết phải có THỨ TỰ THỜI GIAN
+- A → B chỉ có nghĩa nếu A học trước B
+- Không xét cặp có thứ tự ngược (B trước A)
+
+KẾT QUẢ: 714,160 course pairs
+
+LƯU Ý:
+- Số pairs > số courses vì mỗi user có nhiều cặp
+- User có n courses → có n(n-1)/2 pairs
+
+BƯỚC 3.4: TÍNH TEMPORAL COUNTS
+------------------------------
+Code:
+    temporal_counts = pairs.groupBy("course_a", "course_b").agg(
+        count("*").alias("temporal_count"),
+        count_distinct("user_id").alias("unique_users")
+    )
+
+TẠI SAO GROUP BY (course_a, course_b)?
+- Đếm xem mỗi cặp (A, B) xuất hiện bao nhiêu lần
+- temporal_count: tổng số lần A học trước B
+- unique_users: số users khác nhau (tránh bias từ user học nhiều)
+
+VÍ DỤ:
+Cặp (C_682240, C_696597):
+- temporal_count = 4: xuất hiện 4 lần trong data
+- unique_users = 4: 4 users khác nhau học cặp này
+
+KẾT QUẢ: 246,332 temporal pairs
+- Giảm từ 714,160 vì nhiều pairs trùng (cùng A, B)
+
+BƯỚC 3.5: TÍNH SUCCESS CONDITIONING
+-----------------------------------
+Code:
+    # Filter mastery: passed_a = 1
+    mastery = pairs.filter(col("passed_a") == 1)
+
+    mastery_counts = mastery.groupBy("course_a", "course_b").agg(
+        count("*").alias("mastery_count")
+    )
+
+    # Filter success: passed_a = 1 AND passed_b = 1
+    success = pairs.filter((col("passed_a") == 1) & (col("passed_b") == 1))
+
+    success_counts = success.groupBy("course_a", "course_b").agg(
+        count("*").alias("success_count")
+    )
+
+GIẢI THÍCH CÁC KHÁI NIỆM:
+
+a) mastery (vượt qua A):
+   - Chỉ xét các cases mà user PASS course A
+   - passed_a = 1 → user đã "nắm vững" A
+   - mastery_count: số users pass A (trong cặp A→B)
+
+b) success (thành công cả A và B):
+   - Chỉ xét các cases mà user PASS CẢ A và B
+   - passed_a = 1 AND passed_b = 1
+   - success_count: số users pass cả A và B
+
+TẠI SAO PHẢI PHÂN BIỆT mastery và success?
+- Để tính P(pass B | pass A) = success / mastery
+- Đây là XÁC SUẤT CÓ ĐIỀU KIỆN
+- Nếu không phân biệt → không tính được conditioning
+
+VÍ DỤ:
+Cặp (A, B):
+- 100 users học A trước B
+- 50 users pass A → mastery_count = 50
+- 40 users pass cả A và B → success_count = 40
+- P(pass B | pass A) = 40/50 = 0.8
+
+KẾT QUẢ: 168,380 success pairs
+
+BƯỚC 3.6: JOIN VÀ TÍNH PROBABILITIES
+------------------------------------
+Code:
+    prereq = temporal_counts.join(
+        mastery_counts, ["course_a", "course_b"], "left"
+    ).join(
+        success_counts, ["course_a", "course_b"], "left"
+    ).fillna(0)
+
+TẠI SAO DÙNG left join?
+- temporal_counts là base (tất cả pairs)
+- mastery_counts và success_counts có thể thiếu (nếu không có pass)
+- left join giữ lại tất cả pairs từ temporal_counts
+- fillna(0): nếu không có mastery/success → gán 0
+
+TÍNH PROBABILITIES:
+    prereq = prereq.withColumn(
+        "P_temporal",
+        lit(1.0)  # Luôn 1.0 cho course pairs
+    ).withColumn(
+        "P_success",
+        when(col("mastery_count") > 0,
+             col("success_count") / col("mastery_count")).otherwise(0.0)
+    )
+
+TẠI SAO P_temporal LUÔN = 1.0?
+- Vì đã filter temporal pairs (order_a < order_b)
+- Tất cả pairs đều có thứ tự thời gian đúng
+- Không cần tính probability nữa
+
+TẠI SAO P_success = success/mastery?
+- Đây chính là P(pass B | pass A)
+- Nếu mastery_count = 0 → không có ai pass A → P_success = 0
+- Tránh chia cho 0 bằng when().otherwise()
+
+BƯỚC 3.7: TÍNH STRENGTH VÀ FILTER
+---------------------------------
+Code:
+    prereq = prereq.withColumn(
+        "strength",
+        W_TEMPORAL * col("P_temporal") + W_SUCCESS * col("P_success")
+    )
+
+    prereq_filtered = prereq.filter(
+        (col("P_success") >= MIN_SUCCESS_RATE) &
+        (col("unique_users") >= MIN_SUPPORT)
+    )
+
+TẠI SAO TÍNH strength?
+- Kết hợp cả temporal và success
+- strength cao → quan hệ tiên quyết mạnh
+- Dùng để ranking và filtering
+
+TẠI SAO FILTER P_success >= 0.4?
+- Loại bỏ các quan hệ "yếu"
+- P_success < 0.4 → ít hơn 40% pass B sau khi pass A
+- Không đủ bằng chứng để coi là tiên quyết
+
+TẠI SAO FILTER unique_users >= 20?
+- Đảm bảo thống kê đáng tin cậy
+- < 20 users → có thể là ngẫu nhiên
+- Tăng độ tin cậy của kết quả
+
+KẾT QUẢ:
+- 3,258 final prerequisites (từ 246,332 temporal pairs)
+- Giảm 98.7% qua filtering
+- 179 courses có tiên quyết
+
+BƯỚC 3.8: THỐNG KÊ VÀ PHÂN TÍCH
+-------------------------------
+Code:
+    prereq_filtered.select(
+        count("*").alias("count"),
+        avg("strength").alias("avg_strength"),
+        max("strength").alias("max_strength"),
+        avg("P_success").alias("avg_success_rate"),
+        avg("unique_users").alias("avg_support")
+    ).show()
+
+KẾT QUẢ THỐNG KÊ:
+    +-----+------------+------------+----------------+------------------+
+    |count|avg_strength|max_strength|avg_success_rate|       avg_support|
+    +-----+------------+------------+----------------+------------------+
+    | 3258|         1.0|         1.0|             1.0|39.98             |
+    +-----+------------+------------+----------------+------------------+
+
+NHẬN XÉT:
+- avg_strength = 1.0: Rất cao!
+- avg_success_rate = 1.0: P_success = 1.0 cho hầu hết pairs
+- avg_support = 40: Trung bình 40 users per pair
+
+TẠI SAO SUCCESS RATE = 1.0?
+- Điều này có vẻ "quá tốt để là thật"
+- Có thể giải thích:
+  + Users pass A → rất có thể pass B (nếu B là advanced của A)
+  + Hoặc: data bias → chỉ users giỏi mới học nhiều courses
+  + Hoặc: threshold 0.4 quá thấp → giữ lại chỉ các pairs "dễ"
+
+TOP 20 PREREQUISITES:
+Tất cả đều có strength = 1.0, P_success = 1.0
+- C_629559 → nhiều courses (C_677076, C_697032, C_694136, ...)
+- C_674903 → nhiều courses (C_676649, C_676820, ...)
+
+NHẬN XÉT:
+- C_629559 và C_674903 có vẻ là "prerequisite courses" quan trọng
+- Nhiều courses khác yêu cầu 2 courses này trước
+
+BƯỚC 3.9: EXPORT KẾT QUẢ
+------------------------
+Code:
+    # Parquet format
+    prereq_filtered.write.mode("overwrite").parquet(
+        f"{OUTPUT_PATH}/course_prerequisites"
+    )
+
+    # JSON format (nested dictionary)
+    rows = prereq_filtered.collect()
+    prereq_dict = {}
+    for row in rows:
+        a = row["course_a"]
+        if a not in prereq_dict:
+            prereq_dict[a] = {}
+        prereq_dict[a][row["course_b"]] = {
+            "strength": row["strength"],
+            "P_success": row["P_success"],
+            "support": row["unique_users"],
+            ...
+        }
+
+    # Save JSON
+    with open(f"{OUTPUT_PATH}/course_prerequisites.json", "w") as f:
+        json.dump(prereq_dict, f, indent=2)
+
+    # Save pickle
+    with open(f"{OUTPUT_PATH}/course_prerequisites.pkl", "wb") as f:
+        pickle.dump(prereq_dict, f)
+
+TẠI SAO NHIỀU ĐỊNH DẠNG?
+
+a) Parquet:
+   - Format cột, hiệu quả cho Spark/Pandas
+   - Nén tốt, đọc nhanh
+   - Dùng cho processing tiếp theo
+
+b) JSON (nested dict):
+   - Format: {course_a: {course_b: {stats}}}
+   - Dễ query: prereq_dict["C_629559"] → tất cả courses sau C_629559
+   - Compatible với web applications
+
+c) Pickle:
+   - Binary format của Python
+   - Đọc nhanh hơn JSON
+   - Dùng cho Python applications
+
+TẠI SAO NESTED DICT THAY VÌ LIST?
+- Dễ query hơn: dict[a][b] thay vì tìm trong list
+- Nhóm theo course_a → dễ phân tích "courses nào có nhiều tiên quyết"
+- Format tự nhiên cho prerequisite graph
+
+CLEANUP:
+    pairs.unpersist()
+    courses_df.unpersist()
+
+- Giải phóng memory sau khi xong
+
+================================================================================
+4. ỨNG DỤNG CỦA STEP 3
+================================================================================
+
+4.1. XÂY DỰNG ĐỒ THỊ TIÊN QUYẾT
+-------------------------------
+
+Kết quả Step 3 tạo ra một ĐỒ THỊ (graph):
+- Nodes: courses
+- Edges: prerequisite relationships (A → B)
+- Weight: strength score
+
+VÍ DỤ:
+    C_629559 → C_677076 (strength=1.0)
+    C_629559 → C_697032 (strength=1.0)
+    C_674903 → C_676649 (strength=1.0)
+
+4.2. GỢI Ý LỘ TRÌNH HỌC TẬP
+---------------------------
+
+Dựa vào đồ thị tiên quyết:
+- User đã học A → gợi ý B (vì A → B)
+- User chưa học A → cảnh báo "cần học A trước"
+- Tạo learning path: A → B → C → D
+
+VÍ DỤ:
+User: "Tôi muốn học Machine Learning (C_883345)"
+Hệ thống: "Bạn cần học C_1410156 trước (strength=1.0)"
+
+4.3. PHÂN TÍCH CẤU TRÚC CHƯƠNG TRÌNH
+------------------------------------
+
+Từ đồ thị tiên quyết, có thể phân tích:
+- Course nào là "nền tảng" (nhiều courses yêu cầu)?
+- Course nào là "đích đến" (yêu cầu nhiều courses)?
+- Có chu trình không? (A → B → A - lỗi logic)
+
+VÍ DỤ:
+- C_629559: nền tảng (10+ courses yêu cầu)
+- C_883345: đích đến (yêu cầu nhiều courses khác)
+
+4.4. VALIDATION VỚI CHUYÊN GIA
+------------------------------
+
+So sánh với tiên quyết "chính thức":
+- University công bố: A là tiên quyết của B
+- Data nói: P_success(A→B) = 0.8
+- Nếu khớp → validate đúng
+- Nếu không khớp → cần xem xét lại curriculum
+
+================================================================================
+5. HẠN CHẾ VÀ LƯU Ý
+================================================================================
+
+5.1. VỀ P_SUCCESS = 1.0
+-----------------------
+
+Kết quả cho thấy P_success = 1.0 cho hầu hết pairs - điều này CÓ VẺ LẠ.
+
+NGUYÊN NHÂN CÓ THỂ:
+- Data bias: chỉ users giỏi mới học nhiều courses
+- Threshold thấp: 0.4 quá dễ, nên giữ lại chỉ pairs "dễ"
+- Pass/Fail definition: R_score >= 0.4 có thể không chính xác
+
+KHẮC PHỤC:
+- Tăng MIN_SUCCESS_RATE lên 0.6-0.7
+- Tăng MIN_SUPPORT lên 30-50
+- Xem lại cách tính Pass/Fail từ Step 2
+
+5.2. VỀ TEMPORAL vs CAUSAL
+--------------------------
+
+Step 3 chỉ phát hiện TEMPORAL (thứ tự), không phải CAUSAL (nhân quả):
+- A học trước B ≠ A là tiên quyết của B
+- Có thể user học A và B độc lập
+
+CẢI THIỆN:
+- Kết hợp với concept matching (Step 1)
+- Nếu A và B share concepts → có thể là tiên quyết
+- Nếu không share concepts → có thể chỉ là temporal
+
+5.3. VỀ MISSING PREREQUISITES
+-----------------------------
+
+Không phải tất cả tiên quyết đều được phát hiện:
+- Users có thể học không đúng thứ tự
+- Users có thể skip courses
+- Data không đầy đủ
+
+================================================================================
+6. SO SÁNH STEP 1, STEP 2, STEP 3
+================================================================================
+
++------------------+------------------+------------------+------------------+
+| YẾU TỐ           | STEP 1           | STEP 2           | STEP 3           |
++------------------+------------------+------------------+------------------+
+| Mục tiêu         | R(u,c) matrix    | Course sequences | Prerequisites    |
+| Cấp độ           | Concept-level    | Course-level     | Course-pair      |
+| Output           | R_matrix         | user_sequences   | prereq_graph     |
+| Công thức chính  | Concept matching | Pass/Fail        | P(success)       |
+| Ứng dụng         | Recommendation   | Sequence model   | Path planning    |
++------------------+------------------+------------------+------------------+
+
+MỐI QUAN HỆ GIỮA CÁC STEPS:
+- Step 1 → R_score (chi tiết, concept-based)
+- Step 2 → Sequences với Pass/Fail (đơn giản hóa)
+- Step 3 → Prerequisites từ sequences (dùng Pass/Fail)
+
+================================================================================
+7. TÓM TẮT
+================================================================================
+
+Step 3 KHAI PHÁ QUAN HỆ TIÊN QUYẾT với các đặc điểm:
+
+1. ĐẦU VÀO:
+   - user_sequences từ Step 2
+   - 71,479 course records, 11,385 users
+
+2. XỬ LÝ CHÍNH:
+   - Self-join để tạo temporal pairs (A trước B)
+   - Tính mastery_count (pass A) và success_count (pass cả A và B)
+   - Tính P_success = success/mastery
+   - Filter: P_success >= 0.4, unique_users >= 20
+
+3. KẾT QUẢ:
+   - 3,258 prerequisite pairs
+   - 179 courses có tiên quyết
+   - avg_strength = 1.0, avg_support = 40
+
+4. CÔNG THỨC:
+   - strength = 0.6 × P_temporal + 0.4 × P_success
+   - P_temporal = 1.0 (đã filter temporal)
+   - P_success = success_count / mastery_count
+
+5. ỨNG DỤNG:
+   - Xây dựng đồ thị tiên quyết
+   - Gợi ý lộ trình học tập
+   - Phân tích cấu trúc curriculum
+
+6. HẠN CHẾ:
+   - P_success = 1.0 có vẻ quá cao
+   - Temporal ≠ Causal
+   - Có thể missing một số tiên quyết
+
+================================================================================
+HẾT GIẢI THÍCH STEP 3
+================================================================================
+
+File được tạo bởi: Assistant
+Ngày: 2026-05-01
+Ngôn ngữ: Tiếng Việt

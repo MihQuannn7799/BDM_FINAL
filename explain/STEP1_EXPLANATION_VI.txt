@@ -1,0 +1,537 @@
+================================================================================
+STEP 1: TIẾP CẬN KNOWLEDGE GRAPH ĐỂ TÍNH R(u,c) - GIẢI THÍCH CHI TIẾT
+================================================================================
+
+DỰ ÁN: MOOCCubeX - Hệ thống học tập thích ứng trong MOOCs
+FILE: step1_knowledge_graph_approach.ipynb
+VỊ TRÍ: scripts/notebooks/step1_knowledge_graph_approach.ipynb
+
+================================================================================
+1. TỔNG QUAN VÀ MỤC ĐÍCH
+================================================================================
+
+Step 1 xây dựng một KNOWLEDGE GRAPH (đồ thị tri thức) để kết nối NGƯỜI DÙNG
+với KHÓA HỌC thông qua một chuỗi các mối quan hệ. Mục tiêu chính là tính
+R(u,c) - điểm số đo lường mức độ phù hợp giữa người dùng u và khóa học c.
+
+Điểm số này CỰC KỲ QUAN TRỌNG cho:
+- Hệ thống gợi ý khóa học
+- Lộ trình học tập cá nhân hóa
+- Nền tảng giáo dục thích ứng
+
+TẠI SAO CẦN R(u,c)?
+-------------------
+Trong thực tế, chúng ta có hàng nghìn khóa học và hàng triệu người dùng.
+Làm sao để biết người dùng nào nên học khóa học nào? R(u,c) chính là câu
+trả lời - nó cho biết mức độ "hợp" giữa người dùng và khóa học dựa trên
+những gì người dùng đã học (qua video họ xem).
+
+================================================================================
+2. LUỒNG ĐI CỦA KNOWLEDGE GRAPH
+================================================================================
+
+Luồng kết nối như sau:
+
+    NGƯỜI DÙNG → VIDEO → CCID → KHÁI NIỆM → KHÓA HỌC
+
+Hãy phân tích từng liên kết:
+
+a) NGƯỜI DÙNG → VIDEO:
+   - Từ file: user-video.json
+   - Ghi lại video nào mà người dùng đã xem
+   - Chứa 299,938 tương tác người dùng-video
+
+b) VIDEO → CCID:
+   - Từ file: video_id-ccid.txt
+   - Ánh xạ mỗi video đến "ccid" (Concept Cluster ID)
+   - Chứa 2,798,892 ánh xạ video-ccid
+
+c) CCID → KHÁI NIỆM:
+   - Từ file: concept-video.txt
+   - Ánh xạ mỗi ccid đến các khái niệm tri thức chi tiết
+   - Chứa 624,683 mối quan hệ ccid-khái niệm
+
+d) KHÁI NIỆM → KHÓA HỌC:
+   - Từ file: concept-course.csv
+   - Ánh xạ khái niệm đến các khóa học dạy khái niệm đó
+   - Chứa 451,078 mối quan hệ khái niệm-khóa học
+
+TẠI SAO LẠI DÙNG KHÁI NIỆM LÀM TRUNG GIAN?
+------------------------------------------
+Thay vì nối trực tiếp người dùng → khóa học, ta dùng KHÁI NIỆM làm cầu nối.
+Cách này chính xác hơn vì:
+
+1. Hai khóa học có thể dùng thuật ngữ khác nhau nhưng dạy cùng khái niệm
+2. Người dùng thể hiện kiến thức qua việc xem video, mà video được gắn với
+   khái niệm cụ thể
+3. Các khái niệm chi tiết (637,572 khái niệm) cho phép đối sánh chính xác
+
+VÍ DỤ THỰC TẾ:
+- Người dùng A xem video về "cây nhị phân", "duyệt đồ thị"
+- Các video này chứa khái niệm "cấu trúc dữ liệu cây", "thuật toán duyệt"
+- Khóa học "Giải thuật nâng cao" yêu cầu các khái niệm trên
+- → Hệ thống gợi ý khóa học này cho người dùng A
+
+================================================================================
+3. CÔNG THỨC TÍNH R(u,c) - ĐIỂM SỐ LIÊN QUAN KẾT HỢP
+================================================================================
+
+Công thức tính điểm cuối cùng:
+
+    R(u,c) = 0.3 × enroll + 0.7 × watch
+
+Trong đó:
+- enroll = 1.0 nếu người dùng đã ghi danh khóa học, 0 nếu không
+- watch = điểm watch score (sẽ giải thích bên dưới)
+
+TẠI SAO LẠI CHỌN TRỌNG SỐ 0.3 VÀ 0.7?
+-------------------------------------
+- 70% cho watch behavior: Hành vi học thực tế (xem video) phản ánh tốt hơn
+  mức độ liên quan thực sự so với việc chỉ ghi danh
+- 30% cho enrollment: Thể hiện sự quan tâm ban đầu, nhưng chưa đủ mạnh
+
+LÝ DO: Nhiều người ghi danh nhưng không học thực sự. Việc xem video chứng
+tỏ người dùng thực sự tiếp thu nội dung, nên được trọng số cao hơn.
+
+================================================================================
+4. CÁCH TÍNH WATCH SIGNAL - ĐIỂM ĐỘT PHÁ CỦA STEP 1
+================================================================================
+
+Watch score dùng công thức KẾT HỢP (hybrid):
+
+    watch(u,c) = 0.7 × (|u∩c|/|c|) + 0.3 × (|u∩c|/|u|)
+
+Trong đó:
+- |u∩c| = số khái niệm CHUNG giữa người dùng và khóa học
+- |c| = tổng số khái niệm CỦA KHÓA HỌC
+- |u| = tổng số khái niệm MÀ NGƯỜI DÙNG đã học
+
+THÀNH PHẦN 1: Course Relevance (70%)
+------------------------------------
+    |u∩c| / |c|
+
+Câu hỏi nó trả lời: "Người dùng đã phủ được bao nhiêu % nội dung khóa học?"
+
+- Giá trị cao = người dùng đã có kiến thức nền tốt cho khóa này
+- Dùng để: Đánh giá xem người dùng đã học đủ tiên quyết chưa
+
+VÍ DỤ:
+- Khóa học "Machine Learning" có 100 khái niệm
+- Người dùng đã xem video chứa 70 khái niệm trong số đó
+- Course Relevance = 70/100 = 0.7 (70%)
+
+THÀNH PHẦN 2: User Relevance (30%)
+----------------------------------
+    |u∩c| / |u|
+
+Câu hỏi nó trả lời: "Kiến thức của người dùng có bao nhiêu % áp dụng được
+cho khóa học này?"
+
+- Giá trị cao = khóa học phù hợp với hướng học của người dùng
+- Dùng để: Thưởng cho những người học khám phá đa dạng
+
+VÍ DỤ:
+- Người dùng đã học 200 khái niệm tổng cộng
+- Trong đó 70 khái niệm khớp với khóa "Machine Learning"
+- User Relevance = 70/200 = 0.35 (35%)
+
+TẠI SAO PHẢI DÙNG CÔNG THỨC KẾT HỢP?
+------------------------------------
+Nếu chỉ dùng Course Relevance:
+- Sẽ chỉ gợi ý các khóa dễ/nhập môn vì người dùng đã biết hết rồi
+- Không khuyến khích học cái mới
+
+Nếu chỉ dùng User Relevance:
+- Sẽ gợi ý các khóa quá hẹp, trùng lặp với cái đã biết
+- Không đánh giá được mức độ chuẩn bị
+
+→ Kết hợp 70-30: Cân bằng giữa "đã chuẩn bị gì" (70%) và "đa dạng hóa
+kiến thức" (30%)
+
+================================================================================
+5. GIẢI THÍCH TỪNG BƯỚC CODE - TẠI SAO LẠI LÀM NHƯ VẬY?
+================================================================================
+
+BƯỚC 5.1: KHỞI TẠO SPARK
+------------------------
+Code:
+    spark = SparkSession.builder \
+        .appName("Step1_KnowledgeGraph") \
+        .config("spark.driver.memory", "12g") \
+        .config("spark.executor.memory", "12g") \
+        .getOrCreate()
+
+TẠI SAO DÙNG SPARK?
+- Dataset có HÀNG TRIỆU bản ghi (2.8M video-ccid, 160M user-concept...)
+- Xử lý tuần tự sẽ rất chậm, có thể mất hàng giờ
+- Spark cho phép xử lý song song trên nhiều CPU core
+- 12GB RAM được cấp phát để đảm bảo không bị tràn bộ nhớ
+
+BƯỚC 5.2: NẠP CÁC FILE ÁNH XẠ
+-----------------------------
+Code nạp 4 file quan hệ:
+1. video_id-ccid.txt    → DataFrame video_ccid
+2. concept-video.txt    → DataFrame ccid_concept
+3. concept-problem.txt  → DataFrame problem_concept
+4. concept-course.csv   → DataFrame concept_course
+
+Cùng với file entity:
+- user-video.json: Hành vi xem video của người dùng
+- user.json: Hồ sơ người dùng với dữ liệu ghi danh
+- course.json: Thông tin khóa học
+
+TẠI SAO TÁCH RIÊNG CÁC FILE ÁNH XẠ?
+- Mỗi file đảm nhận một phần của Knowledge Graph
+- Dễ bảo trì, cập nhật khi có dữ liệu mới
+- Có thể dùng lại cho các step khác
+
+BƯỚC 5.3: XÂY DỰNG ÁNH XẠ KHÓA HỌC → KHÁI NIỆM
+----------------------------------------------
+Code:
+    course_concepts = concept_course.select(
+        col("course_id"),
+        col("term").alias("concept")
+    ).distinct()
+
+TẠI SAO PHẢI LÀM BƯỚC NÀY?
+- File concept-course.csv có thể có dòng trùng
+- .distinct() loại bỏ trùng lặp, đảm bảo mỗi cặp (course, concept) chỉ
+  xuất hiện 1 lần
+- Kết quả: 887 khóa học với 451,078 cặp khái niệm-khóa học
+
+BƯỚC 5.4: SIGNAL 1 - ENROLLMENT (GHI DANH)
+------------------------------------------
+Code:
+    enroll_df = user_df.select(
+        col("id").alias("user_id"),
+        posexplode("course_order").alias("pos", "course_id"),
+        col("enroll_time")
+    )
+
+TẠI SAO DÙNG posexplode?
+- user.json lưu course_order dưới dạng mảng (list) các khóa học
+- posexplode() "bùng nổ" mảng thành nhiều dòng, giữ lại vị trí (pos)
+- Vị trí này dùng để lấy enroll_time tương ứng từ mảng enroll_time
+
+LOGIC:
+- Mỗi lần ghi danh được gán signal = 1.0
+- Kết quả: 1,163,400 cặp ghi danh
+
+TẠI SAO ENROLL_SIGNAL LUÔN = 1.0?
+- Vì đây là binary signal: có ghi danh (1) hoặc không (0)
+- Chỉ giữ lại những cặp đã ghi danh nên tất cả đều = 1
+
+BƯỚC 5.5: SIGNAL 2 - WATCH SCORE (BƯỚC QUAN TRỌNG NHẤT)
+--------------------------------------------------------
+
+Bước A: Tách các tương tác user-video
+    user_videos = user_video_df.select(
+        "user_id",
+        explode("seq").alias("item")
+    ).select("user_id", col("item.video_id").alias("video_id"))
+
+TẠI SAO DÙNG explode?
+- user-video.json lưu "seq" là mảng các video đã xem
+- explode() biến mỗi phần tử mảng thành một dòng riêng
+- Kết quả: 21,053,655 tương tác user-video
+
+Bước B: Đi qua Knowledge Graph (user → video → ccid → concept)
+    user_concepts_watch = user_videos.join(video_ccid, "video_id")
+        .join(ccid_concept, "ccid")
+        .select("user_id", "concept").distinct()
+
+TẠI SAO JOIN NHƯ THẾ NÀY?
+- user_videos: có (user_id, video_id)
+- video_ccid: có (video_id, ccid) → join qua video_id
+- ccid_concept: có (ccid, concept) → join qua ccid
+- Kết quả: (user_id, concept) - người dùng đã tiếp xúc khái niệm gì
+
+TẠI SAO DÙNG .distinct()?
+- Một video có thể chứa nhiều ccid
+- Một ccid có thể ánh xạ nhiều concept
+- Một người có thể xem nhiều video cùng concept
+- distinct() đảm bảo mỗi cặp (user, concept) chỉ đếm 1 lần
+
+KẾT QUẢ: 160,020,500 cặp user-concept
+
+Bước C: Tính số khái niệm khớp giữa user và course
+    user_course_concept_match = user_concepts_watch.join(
+        course_concepts, "concept"
+    ).groupBy("user_id", "course_id").count()
+
+TẠI SAO JOIN QUA "concept"?
+- user_concepts_watch: user đã học concept gì
+- course_concepts: course cần concept gì
+- Join qua concept → tìm concept CHUNG giữa user và course
+- groupBy + count: đếm số concept chung cho mỗi cặp (user, course)
+
+Bước D: Tính course_relevance = |u∩c| / |c|
+    user_course_course_rel = user_course_concept_match.join(
+        course_concept_count, "course_id"
+    ).withColumn(
+        "course_relevance",
+        col("matched_concepts") / col("total_concepts")
+    )
+
+TẠI SAO CHIA CHO total_concepts?
+- matched_concepts = |u∩c| (số concept chung)
+- total_concepts = |c| (tổng concept của course)
+- Phép chia này chuẩn hóa: course 100 concept khớp 50 khác với course
+  10 concept khớp 5
+- 50/100 = 0.5 và 5/10 = 0.5 → cùng mức độ phủ 50%
+
+Bước E: Tính user_relevance = |u∩c| / |u|
+    user_concept_count = user_concepts_watch.groupBy("user_id").count()
+
+    user_course_hybrid = user_course_course_rel.join(
+        user_concept_count, "user_id"
+    ).withColumn(
+        "user_relevance",
+        col("matched_concepts") / col("total_user_concepts")
+    )
+
+TẠI SAO CẦN user_relevance?
+- total_user_concepts = |u| (tổng concept user đã học)
+- Phép chia này trả lời: "Trong những gì user đã học, có bao nhiêu %
+  áp dụng được cho course này?"
+- Thưởng cho user học ĐA DẠNG: nếu user học 1000 concept và khớp 50 với
+  course, khác với user học 100 concept và khớp 50
+
+Bước F: Tính watch_signal kết hợp
+    user_course_watch = user_course_hybrid.withColumn(
+        "watch_signal",
+        0.7 * col("course_relevance") + 0.3 * col("user_relevance")
+    )
+
+TẠI SAO 0.7 VÀ 0.3?
+- 0.7 cho course_relevance: Ưu tiên đánh giá mức độ PHÙ HỢP VỚI KHÓA HỌC
+- 0.3 cho user_relevance: Bổ sung yếu tố ĐA DẠNG HÓA
+- Kết quả: 6,366,938 cặp (user, course) có watch score
+
+BƯỚC 5.6: KẾT HỢP HAI SIGNAL
+----------------------------
+Code:
+    R_matrix = enroll_df.join(user_course_watch, ["user_id", "course_id"])
+
+    R_matrix = R_matrix.withColumn(
+        "R_score",
+        0.3 * col("enroll_signal") + 0.7 * col("watch_signal")
+    )
+
+TẠI SAO DÙNG INNER JOIN?
+- Chỉ giữ lại cặp (user, course) mà CẢ HAI signal đều tồn tại
+- enroll_signal tồn tại: user ĐÃ ghi danh course
+- watch_signal tồn tại: user ĐÃ xem video liên quan đến course
+- Loại bỏ các trường hợp: ghi danh nhưng không học, hoặc học nhưng không
+  ghi danh (có thể là học dự thính)
+
+KẾT QUẢ: 26,853 cặp trước khi lọc
+
+TẠI SAO R_score = 0.3×enroll + 0.7×watch?
+- enroll luôn = 1.0 (vì chỉ giữ cặp đã ghi danh)
+- watch biến thiên từ 0 đến ~1
+- 70% weight cho watch vì hành vi thực tế quan trọng hơn đăng ký suông
+
+BƯỚC 5.7: LỌC VÀ CHUẨN HÓA
+--------------------------
+
+LỌC (Filtering):
+Code:
+    valid_users = R_matrix.groupBy("user_id").count()
+        .filter(col("count") >= MIN_COURSES_USER)
+    valid_courses = R_matrix.groupBy("course_id").count()
+        .filter(col("count") >= MIN_USERS_COURSE)
+
+TẠI SAO PHẢI LỌC?
+- MIN_COURSES_USER = 2: Loại user chỉ học 1 course
+  → Không đủ dữ liệu để gợi ý, không có mẫu hành vi rõ ràng
+
+- MIN_USERS_COURSE = 3: Loại course chỉ có 1-2 người học
+  → Course quá niche, không đủ dữ liệu để đánh giá chất lượng gợi ý
+
+KẾT QUẢ: 18,370 cặp (5,033 users, 470 courses)
+
+CHUẨN HÓA (Normalization):
+Code:
+    user_window = Window.partitionBy("user_id")
+    R_filtered = R_filtered.withColumn("R_max", max("R_score").over(user_window))
+                           .withColumn("R_min", min("R_score").over(user_window))
+
+    R_final = R_filtered.withColumn(
+        "R_norm",
+        when(col("R_max") > col("R_min"),
+             (col("R_score") - col("R_min")) / (col("R_max") - col("R_min")))
+        .when(col("R_max") > 0, 1.0)
+        .otherwise(0.0)
+    )
+
+TẠI SAO PHẢI CHUẨN HÓA THEO TỪNG USER?
+- Mỗi user có mức độ engagement khác nhau:
+  + User A: xem nhiều video, R_score cao (~0.8-0.9)
+  + User B: xem ít video, R_score thấp (~0.3-0.4)
+- Nếu so sánh trực tiếp R_score của A và B → không công bằng
+
+- Min-Max normalization biến đổi R_score thành R_norm trong khoảng [0,1]
+- R_norm = 0: course kém phù hợp NHẤT trong tất cả course của user này
+- R_norm = 1: course phù hợp NHẤT trong tất cả course của user này
+- Giúp ranking công bằng hơn khi gợi ý
+
+XỬ LÝ TRƯỜNG HỢP ĐẶC BIỆT:
+- Nếu R_max > R_min: chuẩn hóa bình thường
+- Nếu R_max > 0 nhưng R_max = R_min: tất cả course như nhau → gán 1.0
+- Nếu R_max = 0: không có signal nào → gán 0.0
+
+================================================================================
+6. KẾT QUẢ VÀ THỐNG KÊ
+================================================================================
+
+R_matrix cuối cùng:
+- Tổng số cặp: 18,370
+- Số user duy nhất: 5,033
+- Số course duy nhất: 470
+
+Thống kê R_score:
+- Trung bình (mean): 0.455
+- Độ lệch chuẩn (std): 0.103
+- Nhỏ nhất (min): 0.301
+- Lớn nhất (max): 1.0
+- Trung vị (median/50%): 0.425
+- Phân vị 25%: 0.388
+- Phân vị 75%: 0.526
+
+Thành phần signal:
+- Trung bình enroll_signal: 1.0 (tất cả cặp đều đã ghi danh)
+- Trung bình watch_signal: 0.221
+- Trung bình R_score: 0.455
+
+GIẢI THÍCH:
+- Watch signal thấp hơn enroll signal là BÌNH THƯỜNG
+- Xem video không tự động có nghĩa là phù hợp với course
+- Công thức hybrid đã phân biệt tốt các mức độ liên quan
+
+================================================================================
+7. FILE ĐẦU RA
+================================================================================
+
+Step 1 tạo ra 2 file output:
+
+1. R_matrix/ (hoặc R_matrix_kg/)
+   - Chứa: user_id, course_id, enroll_time, enroll_signal, watch_signal,
+           R_score, R_norm
+   - Dùng làm: Ma trận liên quan cuối cùng cho hệ thống gợi ý
+
+2. user_course_watch/
+   - Chứa: user_id, course_id, watch_signal, course_relevance,
+           user_relevance
+   - Dùng để: Phân tích chi tiết các thành phần của watch score
+
+================================================================================
+8. CÁC QUYẾT ĐỊNH THIẾT KẾ QUAN TRỌNG
+================================================================================
+
+QUYẾT ĐỊNH 1: Dùng khái niệm làm trung gian
+--------------------------------------------
+TẠI SAO không nối trực tiếp user → course?
+
+TRẢ LỜI: Khái niệm cung cấp hiểu biết NGỮ NGHĨA. Ví dụ:
+- User xem video về "binary tree" và "graph traversal"
+- Các video này chứa khái niệm "tree data structure", "traversal algorithm"
+- Course "Advanced Algorithms" yêu cầu các khái niệm này
+- → Hệ thống gợi ý course này, mặc dù user chưa bao giờ search "algorithm"
+
+Nếu không dùng concept, hệ thống chỉ khớp từ khóa → bỏ sót gợi ý quan trọng.
+
+QUYẾT ĐỊNH 2: Công thức hybrid (0.7 course + 0.3 user)
+------------------------------------------------------
+TẠI SAO không chỉ dùng course relevance?
+
+TRẢ LỜI: Nếu chỉ dùng course relevance:
+- Course "Nhập môn Python" có 10 concept
+- User A đã học 9/10 concept → relevance = 0.9
+- Course "Machine Learning" có 100 concept
+- User A đã học 50/100 concept → relevance = 0.5
+- → Chỉ gợi ý course dễ, không khuyến khích học cái mới
+
+Với 30% user relevance:
+- User A học 200 concept tổng cộng
+- User relevance cho "Nhập môn Python" = 9/200 = 0.045
+- User relevance cho "Machine Learning" = 50/200 = 0.25
+- → Course khó được "thưởng" thêm điểm
+
+QUYẾT ĐỊNH 3: Inner join khi kết hợp signal
+-------------------------------------------
+TẠI SAO không dùng outer join (giữ tất cả cặp)?
+
+TRẢ LỜI: Inner join đảm bảo chỉ score những cặp (user, course) mà:
+- User THỰC SỰ đã ghi danh (enroll_signal = 1)
+- User THỰC SỰ đã xem video liên quan (watch_signal > 0)
+
+Outer join sẽ bao gồm:
+- User ghi danh nhưng KHÔNG HỌC → R_score sai lệch cao
+- User học dự thính (không ghi danh) → không có trong data user.json
+
+→ Inner join tạo ra ma trận CHẤT LƯỢNG CAO, dựa trên bằng chứng thực tế.
+
+QUYẾT ĐỊNH 4: Chuẩn hóa Min-Max theo từng user
+----------------------------------------------
+TẠI SAO không chuẩn hóa toàn cục?
+
+TRẢ LỜI: Vì mỗi user có mức độ engagement khác nhau:
+
+User A (chăm chỉ):
+- Xem 1000 video, học 500 concept
+- R_score cho các course: 0.6 - 0.9
+
+User B (ít hoạt động):
+- Xem 50 video, học 30 concept
+- R_score cho các course: 0.3 - 0.5
+
+Nếu so sánh trực tiếp:
+- Course X với User A: R_score = 0.7
+- Course Y với User B: R_score = 0.4
+- → Tưởng User A phù hợp hơn, nhưng thực tế có thể User B phù hợp hơn
+  trong ngữ cảnh của B
+
+Với chuẩn hóa per-user:
+- Course X với User A: R_norm = 0.5 (trung bình trong các course của A)
+- Course Y với User B: R_norm = 0.9 (cao nhất trong các course của B)
+- → Gợi ý công bằng hơn, phù hợp với từng user
+
+================================================================================
+9. CÁCH SỬ DỤNG KẾT QUẢ CỦA STEP 1
+================================================================================
+
+Ma trận R(u,c) từ Step 1 có thể dùng cho:
+
+1. GỢI Ý KHÓA HỌC
+   Với user u, gợi ý các course có R_norm cao nhất
+
+2. TẠO LỘ TRÌNH HỌC TẬP
+   Sắp xếp course theo R_score để tạo trình tự học cá nhân hóa
+
+3. PHÂN TÍCH TIÊN QUYẾT
+   Course relevance cao → user đã có kiến thức nền
+
+4. XÁC ĐỊNH LỖ HỔNG KIẾN THỨC
+   Watch signal thấp nhưng enroll_signal = 1 → user có thể gặp khó khăn
+
+================================================================================
+10. TÓM TẮT
+================================================================================
+
+Step 1 xây dựng một Knowledge Graph mà:
+- Kết nối người dùng với khóa học thông qua khái niệm
+- Tính mức độ liên quan dùng enrollment (30%) và hành vi xem (70%)
+- Dùng công thức hybrid cân bằng giữa chuẩn bị cho course và đa dạng hóa
+- Tạo ra ma trận liên quan đã chuẩn hóa R(u,c) cho các bước tiếp theo
+
+Cách tiếp cận này là NGỮ NGHĨA (dựa trên concept) thay vì CÚ PHÁP (dựa trên
+từ khóa), làm cho nó mạnh mẽ hơn cho hệ thống gợi ý giáo dục.
+
+================================================================================
+HẾT GIẢI THÍCH STEP 1
+================================================================================
+
+File được tạo bởi: Assistant
+Ngày: 2026-05-01
+Ngôn ngữ: Tiếng Việt

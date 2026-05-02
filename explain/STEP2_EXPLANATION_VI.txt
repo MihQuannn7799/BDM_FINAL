@@ -1,0 +1,568 @@
+================================================================================
+STEP 2: CHUỖI KHÓA HỌC VỚI CHỈ SỐ PASS/FAIL - GIẢI THÍCH CHI TIẾT
+================================================================================
+
+DỰ ÁN: MOOCCubeX - Hệ thống học tập thích ứng trong MOOCs
+FILE: step2_course_only.ipynb
+VỊ TRÍ: scripts/notebooks/step2_course_only.ipynb
+
+================================================================================
+1. TỔNG QUAN VÀ MỤC ĐÍCH
+================================================================================
+
+Step 2 tập trung vào việc xây dựng CHUỖI KHÓA HỌC (course sequences) ở cấp
+độ course, với chỉ số PASS/FAIL để biểu thị hiệu suất học tập của người dùng.
+
+MỤC TIÊU CHÍNH:
+- Chuyển đổi từ dữ liệu ghi danh thô thành chuỗi khóa học có thứ tự thời gian
+- Tính toán điểm số R_score cho mỗi khóa học
+- Tạo chỉ số Pass/Fail (Đậu/Rớt) dựa trên ngưỡng R_score
+- Xuất ra định dạng phù hợp cho các mô hình gợi ý chuỗi (như CTR, BERT4Rec)
+
+INPUT (ĐẦU VÀO):
+- user.json: Thông tin người dùng và khóa học đã ghi danh
+- user-video.json: Hành vi xem video của người dùng
+- concept-course_trans.csv: Danh sách khóa học hợp lệ (có khái niệm)
+
+OUTPUT (ĐẦU RA):
+- user_sequences.parquet / user_sequences.json: Chuỗi khóa học của người dùng
+
+TẠI SAO CẦN STEP 2?
+-------------------
+Step 1 tạo ma trận R(u,c) phẳng (flat matrix), nhưng trong thực tế:
+- Người dùng học theo THỨ TỰ THỜI GIAN (không phải ngẫu nhiên)
+- Thứ tự học ảnh hưởng đến kết quả (học A trước B khác học B trước A)
+- Cần biết "học xong khóa này thì học khóa tiếp theo gì?"
+
+Step 2 biến dữ liệu thành CHUỖI (sequence) để:
+- Huấn luyện mô hình dự đoán khóa học tiếp theo
+- Phân tích lộ trình học tập thành công/thất bại
+- Gợi ý dựa trên thứ tự học thực tế của người dùng
+
+================================================================================
+2. CÔNG THỨC VÀ LOGIC CHÍNH
+================================================================================
+
+2.1. R_SCORE TRONG STEP 2
+-------------------------
+
+Công thức:
+    R_score = 0.3 × enroll_signal + 0.7 × watch_signal
+
+Trong Step 2, các thành phần được tính KHÁC với Step 1:
+
+a) enroll_signal = 1.0 (nếu user đã ghi danh course)
+   - Giống Step 1
+
+b) watch_signal = min(videos_watched / 100, 1.0)
+   - KHÁC với Step 1!
+   - Step 1: watch_signal dựa trên concept matching (phức tạp)
+   - Step 2: watch_signal dựa trên SỐ LƯỢNG video đã xem (đơn giản)
+
+TẠI SAO LẠI ĐƠN GIẢN HÓA WATCH_SIGNAL?
+--------------------------------------
+- Step 2 tập trung vào COURSE-LEVEL, không phải concept-level
+- Chỉ cần biết user có "học nghiêm túc" không (xem nhiều video)
+- Ngưỡng 100 video: cap để tránh bias cho user xem quá nhiều
+- watch_signal = 1.0 khi user xem >= 100 video
+
+VÍ DỤ:
+- User A xem 6 video → watch_signal = 6/100 = 0.06
+- User B xem 55 video → watch_signal = 55/100 = 0.55
+- User C xem 150 video → watch_signal = min(150/100, 1.0) = 1.0
+
+R_score ví dụ:
+- User A: R_score = 0.3×1.0 + 0.7×0.06 = 0.342
+- User B: R_score = 0.3×1.0 + 0.7×0.55 = 0.685
+- User C: R_score = 0.3×1.0 + 0.7×1.0 = 1.0
+
+2.2. CHỈ SỐ PASS/FAIL
+---------------------
+
+Công thức:
+    passed = 1 (PASS) nếu R_score >= 0.4
+    passed = 0 (FAIL) nếu R_score < 0.4
+
+TẠI SAO NGƯỠNG 0.4?
+-------------------
+- R_score tối thiểu (khi watch_signal = 0): 0.3×1.0 + 0.7×0.0 = 0.3
+- R_score tối đa: 0.3×1.0 + 0.7×1.0 = 1.0
+- Ngưỡng 0.4 nằm ở khoảng 1/7 từ minimum đến maximum
+
+Ý nghĩa:
+- PASS (R_score >= 0.4): User xem đủ video để được coi là "học thật"
+- FAIL (R_score < 0.4): User ghi danh nhưng xem rất ít video
+
+VÍ DỤ:
+- User xem 15 video: watch_signal = 0.15 → R_score = 0.3 + 0.7×0.15 = 0.405 → PASS
+- User xem 10 video: watch_signal = 0.10 → R_score = 0.3 + 0.7×0.10 = 0.37 → FAIL
+- User xem 14 video: watch_signal = 0.14 → R_score = 0.3 + 0.7×0.14 = 0.398 → FAIL
+
+→ Cần xem ít nhất 15 video để PASS (với công thức này)
+
+================================================================================
+3. GIẢI THÍCH TỪNG BƯỚC CODE - TẠI SAO LẠI LÀM NHƯ VẬY?
+================================================================================
+
+BƯỚC 3.1: KHỞI TẠO SPARK
+------------------------
+Code:
+    spark = SparkSession.builder \
+        .appName("Step2_CourseSequences") \
+        .config("spark.driver.memory", "12g") \
+        .config("spark.sql.adaptive.enabled", "true") \
+        .getOrCreate()
+
+TẠI SAO CÓ spark.sql.adaptive.enabled = true?
+- Adaptive Query Execution (AQE) tự động tối ưu query khi chạy
+- Điều chỉnh số partition, join strategy dựa trên dữ liệu thực tế
+- Giúp code chạy nhanh hơn mà không cần tuning thủ công
+
+Cấu hình:
+- MIN_COURSES_USER = 2: User phải có ít nhất 2 khóa học
+- W_ENROLL = 0.3, W_WATCH = 0.7: Trọng số cho R_score
+
+BƯỚC 3.2: LẤY DANH SÁCH KHÓA HỌC HỢP LỆ
+---------------------------------------
+Code:
+    concept_course = spark.read.csv(
+        f"{DATA_PATH}/relations/concept-course_trans.csv",
+        header=True
+    )
+
+    valid_courses = concept_course.select("course_id").distinct()
+    valid_course_set = set([r.course_id for r in valid_courses.collect()])
+
+TẠI SAO PHẢI LỌC COURSE HỢP LỆ?
+- Không phải course nào trong user.json cũng có trong concept-course
+- Chỉ giữ lại courses CÓ KHÁI NIỆM → dễ phân tích và gợi ý hơn
+- concept-course_trans.csv: file đã dịch/chuẩn hóa từ concept-course.txt
+
+TẠI SAO DÙNG .collect() VÀO SET?
+- valid_course_set là Python set → check "isin" nhanh hơn
+- Nếu dùng DataFrame join: chậm hơn do phải shuffle data
+- 887 courses → đủ nhỏ để collect vào memory
+
+KẾT QUẢ: 887 khóa học hợp lệ
+
+BƯỚC 3.3: TÍNH WATCH SIGNAL TỪ USER-VIDEO
+-----------------------------------------
+Code:
+    user_video = spark.read.json(f"{DATA_PATH}/relations/user-video.json")
+
+    user_engagement = user_video.select(
+        "user_id",
+        size("seq").alias("videos_watched")
+    )
+
+    user_engagement = user_engagement.withColumn(
+        "watch_signal",
+        least(col("videos_watched") / lit(100.0), lit(1.0))
+    )
+
+TẠI SAO DÙNG size("seq")?
+- user-video.json: "seq" là mảng các video đã xem
+- size("seq") = số lượng video user đã xem
+- Đơn giản hơn Step 1 (không cần join qua concept)
+
+TẠI SAO DÙNG least(..., lit(1.0))?
+- least(a, b) trả về giá trị nhỏ hơn giữa a và b
+- Nếu videos_watched/100 > 1.0 → lấy 1.0
+- Nếu videos_watched/100 < 1.0 → lấy videos_watched/100
+- Tương đương: min(videos_watched/100, 1.0)
+
+TẠI SAO CACHE()?
+- user_engagement được dùng 2 lần (join và count)
+- Cache() lưu vào memory → không cần đọc lại file
+- Tăng tốc độ xử lý
+
+KẾT QUẢ: 299,938 users có dữ liệu video
+
+BƯỚC 3.4: LOAD VÀ XỬ LÝ USER ENROLLMENT
+---------------------------------------
+Code:
+    user_df = spark.read.json(f"{DATA_PATH}/entities/user.json")
+
+    user_enroll = user_df.select(
+        col("id").alias("user_id"),
+        posexplode("course_order").alias("pos", "course_id_raw"),
+        col("enroll_time")
+    ).withColumn("enroll_time_str", element_at(col("enroll_time"), col("pos") + 1))
+     .select(
+        "user_id",
+        col("pos"),
+        concat(lit("C_"), col("course_id_raw").cast("string")).alias("course_id"),
+        to_timestamp(col("enroll_time_str")).alias("enroll_time")
+    ).filter(col("course_id").isin(valid_course_set))
+     .withColumn("enroll_signal", lit(1.0))
+
+GIẢI THÍCH CHI TIẾT:
+
+a) posexplode("course_order"):
+   - course_order = [682129, 2294668, ...] (mảng course ID)
+   - posexplode → bùng nổ thành nhiều dòng, giữ lại vị trí (pos)
+   - Kết quả: mỗi dòng là một (user, course) pair
+
+   VÍ DỤ:
+   Trước: user U_22 có course_order = [682129, 2294668]
+   Sau:
+     (U_22, pos=0, course_id_raw=682129)
+     (U_22, pos=1, course_id_raw=2294668)
+
+b) element_at(col("enroll_time"), col("pos") + 1):
+   - enroll_time cũng là mảng, song song với course_order
+   - element_at lấy phần tử tại vị trí pos
+   - +1 vì Spark 1-indexed (vị trí đầu tiên là 1, không phải 0)
+
+   VÍ DỤ:
+   enroll_time = ["2019-10-12...", "2020-11-21..."]
+   pos = 0 → element_at(..., 1) = "2019-10-12..."
+
+c) concat(lit("C_"), ...):
+   - course_id_raw trong user.json là số (682129)
+   - Trong concept-course là chuỗi ("C_682129")
+   - Thêm "C_" để khớp định dạng
+
+d) to_timestamp(...):
+   - enroll_time_str là string → chuyển thành timestamp
+   - Giúp sắp xếp đúng thứ tự thời gian
+
+e) filter(col("course_id").isin(valid_course_set)):
+   - Chỉ giữ courses có trong danh sách hợp lệ
+   - Loại bỏ courses không có concept mapping
+
+KẾT QUẢ: 488,930 user-enrollment records
+
+BƯỚC 3.5: JOIN VỚI WATCH SIGNAL VÀ TÍNH R_SCORE
+-----------------------------------------------
+Code:
+    user_course = user_enroll.join(
+        user_engagement,
+        "user_id",
+        "inner"
+    ).withColumn(
+        "watch_signal",
+        coalesce(col("watch_signal"), lit(0.0))
+    )
+
+    user_course = user_course.withColumn(
+        "R_score",
+        W_ENROLL * col("enroll_signal") + W_WATCH * col("watch_signal")
+    )
+
+TẠI SAO DÙNG INNER JOIN?
+- Chỉ giữ users có CẢ enrollment VÀ video data
+- Loại bỏ users ghi danh nhưng không xem video nào
+- Đảm bảo R_score phản ánh hành vi thực tế
+
+TẠI SAO DÙNG coalesce(...)?
+- coalesce(a, b) trả về a nếu a không null, ngược lại trả về b
+- Phòng trường hợp watch_signal = null → gán 0.0
+- An toàn hơn là để null
+
+R_score calculation:
+- 0.3 × 1.0 (enroll) + 0.7 × watch_signal
+- watch_signal cao → R_score cao
+
+BƯỚC 3.6: TẠO CHỈ SỐ PASS/FAIL
+------------------------------
+Code:
+    user_course = user_course.withColumn(
+        "passed",
+        when(col("R_score") >= 0.4, lit(1)).otherwise(lit(0))
+    )
+
+TẠI SAO DÙNG when().otherwise()?
+- when(condition, value): nếu condition đúng → trả về value
+- otherwise(value): nếu condition sai → trả về value
+- Tương đương if-else trong SQL
+
+LOGIC:
+- R_score >= 0.4 → passed = 1 (PASS)
+- R_score < 0.4 → passed = 0 (FAIL)
+
+TẠI SAO CẦN PASS/FAIL?
+- Đơn giản hóa việc đánh giá hiệu suất
+- Dễ phân tích: bao nhiêu % users PASS?
+- Dùng cho mô hình dự đoán: "user sẽ PASS course tiếp theo không?"
+
+KẾT QUẢ: 77,582 user-course records
+
+BƯỚC 3.7: LỌC USERS VỚI MIN_COURSES_USER
+----------------------------------------
+Code:
+    valid_users = user_course.groupBy("user_id").count()
+        .filter(col("count") >= MIN_COURSES_USER)
+
+    user_course = user_course.join(valid_users.select("user_id"), "user_id")
+
+TẠI SAO PHẢI LỌC?
+- User chỉ học 1 course: không có sequence để phân tích
+- Không thể dự đoán "course tiếp theo" nếu chỉ có 1 course
+- MIN_COURSES_USER = 2: tối thiểu phải có 2 courses
+
+KẾT QUẢ:
+- 11,385 users hợp lệ
+- 71,479 user-course records
+
+THỐNG KÊ PASS/FAIL:
+    +------+-----+-------------------+
+    |passed|count|                pct|
+    +------+-----+-------------------+
+    |     1|14769|  20.66%           |
+    |     0|56710|  79.34%           |
+    +------+-----+-------------------+
+
+GIẢI THÍCH:
+- Chỉ 20.66% courses được PASS (R_score >= 0.4)
+- 79.34% courses FAIL (R_score < 0.4)
+- Điều này BÌNH THƯỜNG vì:
+  + Nhiều users ghi danh nhưng chỉ xem vài video
+  + Ngưỡng 15 videos để PASS là khá cao
+
+BƯỚC 3.8: XÂY DỰNG CHUỖI KHÓA HỌC
+---------------------------------
+Code:
+    user_seq = user_course.withColumn(
+        "sequence_order",
+        col("pos") + 1
+    ).groupBy("user_id").agg(
+        sort_array(collect_list(struct(
+            col("sequence_order"),
+            col("course_id"),
+            col("R_score"),
+            col("passed")
+        ))).alias("sequence")
+    )
+
+GIẢI THÍCH TỪNG HÀM:
+
+a) col("pos") + 1:
+   - pos bắt đầu từ 0 (Spark 0-indexed)
+   + sequence_order bắt đầu từ 1 (dễ đọc hơn)
+   - pos=0 → sequence_order=1 (course đầu tiên)
+
+b) collect_list(struct(...)):
+   - struct(): tạo object chứa (sequence_order, course_id, R_score, passed)
+   - collect_list(): gom tất cả objects vào một mảng
+   - groupBy("user_id"): mỗi user có một mảng
+
+   VÍ DỤ:
+   Trước khi group:
+     (U_112, 0, C_696994, 0.342, 0)
+     (U_112, 3, C_677020, 0.342, 0)
+     (U_112, 8, C_696855, 0.342, 0)
+
+   Sau khi group:
+     U_112: [
+       (0, C_696994, 0.342, 0),
+       (3, C_677020, 0.342, 0),
+       (8, C_696855, 0.342, 0)
+     ]
+
+c) sort_array(...):
+   - Sắp xếp mảng theo sequence_order (tăng dần)
+   - Đảm bảo thứ tự thời gian đúng
+   - Quan trọng cho mô hình sequence!
+
+   VÍ DỤ:
+   Trước: [(3, C_B), (0, C_A), (8, C_C)]
+   Sau:  [(0, C_A), (3, C_B), (8, C_C)]
+
+TẠI SAO DÙNG collect_list + sort_array?
+- Giữ nguyên thông tin đầy đủ cho mỗi course
+- Thứ tự quan trọng cho mô hình sequence (BERT4Rec, SASRec)
+- Output format phù hợp với các thư viện recommendation
+
+KẾT QUẢ: 11,385 users với chuỗi khóa học
+
+BƯỚC 3.9: KIỂM TRA VALIDATION
+-----------------------------
+Code:
+    sample = user_seq.limit(5).collect()[0]
+    uid = sample["user_id"]
+    seq = sample["sequence"]
+
+    print(f"Sample User: {uid}")
+    print(f"Courses: {len(seq)}")
+
+    for item in seq[:5]:
+        status = "PASS" if item["passed"] else "FAIL"
+        print(f"  {item['course_id']}: R_score={item['R_score']:.3f}, {status}")
+
+MỤC ĐÍCH:
+- Kiểm tra output có đúng format không
+- Xem ví dụ thực tế trước khi export
+- Debug nếu có vấn đề
+
+VÍ DỤ OUTPUT:
+    Sample User: U_173698
+    Courses: 2
+
+    First 5 courses:
+      C_696908: R_score=0.328, FAIL
+      C_1756060: R_score=0.328, FAIL
+
+NHẬN XÉT:
+- User này chỉ học 2 courses (đủ điều kiện MIN_COURSES_USER)
+- Cả 2 courses đều FAIL (R_score = 0.328 < 0.4)
+- R_score thấp → user xem rất ít video
+
+BƯỚC 3.10: EXPORT KẾT QUẢ
+-------------------------
+Code:
+    user_seq.write.mode("overwrite").json(
+        f"{OUTPUT_PATH}/user_sequences_course_only"
+    )
+
+    user_seq.select(
+        to_json(struct("user_id", "sequence")).alias("value")
+    ).write.mode("overwrite").text(
+        f"{OUTPUT_PATH}/user_sequences_course_json"
+    )
+
+    user_seq.toPandas().to_json(
+        f"{OUTPUT_PATH}/user_sequences.json", orient='records'
+    )
+
+TẠI SAO EXPORT NHIỀU ĐỊNH DẠNG?
+
+a) user_sequences_course_only (JSON/Parquet):
+   - Format gốc của Spark
+   - Dùng cho các bước xử lý tiếp theo trong Spark
+
+b) user_sequences_course_json (text file):
+   - Mỗi dòng là một JSON object
+   - Format chuẩn cho machine learning (JSON Lines)
+   - Dễ đọc bằng Python: pd.read_json(file, lines=True)
+
+c) user_sequences.json (Pandas JSON):
+   - Format records: mỗi record là một user
+   - Dễ dùng cho visualization, analysis
+   - Compatible với nhiều thư viện Python
+
+TẠI SAO DÙNG mode("overwrite")?
+- Ghi đè file cũ nếu tồn tại
+- Tránh lỗi "file already exists" khi chạy lại
+- Đảm bảo output luôn mới nhất
+
+CLEANUP:
+    user_engagement.unpersist()
+    user_course.unpersist()
+    user_seq.unpersist()
+
+TẠI SAO PHẢI unpersist()?
+- Cache() lưu DataFrame vào memory
+- unpersist() xóa khỏi memory → giải phóng RAM
+- Quan trọng khi chạy nhiều steps liên tiếp
+
+================================================================================
+4. SO SÁNH STEP 1 VÀ STEP 2
+================================================================================
+
++------------------+------------------+------------------+
+| YẾU TỐ           | STEP 1           | STEP 2           |
++------------------+------------------+------------------+
+| Mục tiêu         | R(u,c) matrix    | Course sequences |
+| Cấp độ           | Concept-level    | Course-level     |
+| watch_signal     | Concept matching | Video count      |
+| Pass/Fail        | Không có         | Có (R>=0.4)      |
+| Output           | R_matrix.csv     | user_sequences   |
+| Sử dụng          | Recommendation   | Sequence model   |
++------------------+------------------+------------------+
+
+TẠI SAO STEP 2 ĐƠN GIẢN HƠN STEP 1?
+-----------------------------------
+- Step 1: Phức tạp vì cần concept matching chính xác
+- Step 2: Đơn giản vì chỉ cần biết user có "học thật" không
+- Step 2 tập trung vào THỨ TỰ và HIỆU SUẤT, không phải nội dung
+
+================================================================================
+5. ỨNG DỤNG CỦA STEP 2
+================================================================================
+
+5.1. MÔ HÌNH DỰ ĐOÁN KHÓA HỌC TIẾP THEO
+---------------------------------------
+Input:  [C_696908(FAIL), C_1756060(FAIL), ...]
+Output: Dự đoán course tiếp theo
+
+Mô hình có thể dùng:
+- BERT4Rec: Transformer-based sequence model
+- SASRec: Self-attention for sequential recommendation
+- GRU4Rec: RNN-based sequence model
+
+5.2. PHÂN TÍCH LỘ TRÌNH HỌC TẬP
+------------------------------
+Với chỉ số Pass/Fail, có thể phân tích:
+- Lộ trình nào có tỷ lệ PASS cao nhất?
+- Course nào thường được học trước khi học course X?
+- Users FAIL course A có xu hướng học course gì tiếp theo?
+
+5.3. GỢI Ý DƯA TRÊN HIỆU SUẤT
+-----------------------------
+- Users FAIL nhiều courses → gợi ý courses dễ hơn
+- Users PASS liên tục → gợi ý courses nâng cao
+- Course có tỷ lệ FAIL cao → cần cải thiện chất lượng
+
+================================================================================
+6. ĐIỂM QUAN TRỌNG CẦN LƯU Ý
+================================================================================
+
+6.1. VỀ PASS/FAIL THRESHOLD
+---------------------------
+- Ngưỡng 0.4 là arbitrary (chọn thử nghiệm)
+- Có thể điều chỉnh dựa trên phân tích data thực tế
+- Nếu muốn tỷ lệ PASS cao hơn → giảm ngưỡng (0.35)
+- Nếu muốn tỷ lệ PASS thấp hơn → tăng ngưỡng (0.45)
+
+6.2. VỀ VIDEO COUNT THRESHOLD
+-----------------------------
+- 100 videos là cap cho watch_signal
+- Nếu muốn khắt khe hơn → giảm cap (50 videos)
+- Nếu muốn thoải mái hơn → tăng cap (200 videos)
+
+6.3. VỀ MIN_COURSES_USER
+------------------------
+- Hiện tại = 2 (tối thiểu để có sequence)
+- Nếu muốn phân tích sâu hơn → tăng lên 3-5 courses
+- Trade-off: nhiều users hơn vs. chất lượng sequence cao hơn
+
+================================================================================
+7. TÓM TẮT
+================================================================================
+
+Step 2 xây dựng CHUỖI KHÓA HỌC với các đặc điểm:
+
+1. DỮ LIỆU ĐẦU VÀO:
+   - user.json: enrollment information
+   - user-video.json: video watching behavior
+   - concept-course_trans.csv: valid course list
+
+2. XỬ LÝ CHÍNH:
+   - Tính watch_signal từ số video đã xem
+   - Tính R_score = 0.3×enroll + 0.7×watch
+   - Tạo Pass/Fail indicator (ngưỡng 0.4)
+   - Lọc users có ít nhất 2 courses
+   - Build sequence theo thứ tự thời gian
+
+3. KẾT QUẢ:
+   - 11,385 users với chuỗi khóa học
+   - 71,479 user-course records
+   - 20.66% PASS, 79.34% FAIL
+
+4. ỨNG DỤNG:
+   - Mô hình dự đoán course tiếp theo
+   - Phân tích lộ trình học tập
+   - Gợi ý dựa trên hiệu suất
+
+5. KHÁC BIỆT VỚI STEP 1:
+   - Course-level thay vì concept-level
+   - Watch signal đơn giản (số video) thay vì concept matching
+   - Có Pass/Fail indicator
+   - Output là sequence thay vì matrix
+
+================================================================================
+HẾT GIẢI THÍCH STEP 2
+================================================================================
+
+
