@@ -233,7 +233,7 @@ Bước A: Tách các tương tác user-video
 TẠI SAO DÙNG explode?
 - user-video.json lưu "seq" là mảng các video đã xem
 - explode() biến mỗi phần tử mảng thành một dòng riêng
-- Kết quả: 21,053,655 tương tác user-video
+- Kết quả: 1,943,673 tương tác user-video
 
 Bước B: Đi qua Knowledge Graph (user → video → ccid → concept)
     user_concepts_watch = user_videos.join(video_ccid, "video_id")
@@ -252,7 +252,10 @@ TẠI SAO DÙNG .distinct()?
 - Một người có thể xem nhiều video cùng concept
 - distinct() đảm bảo mỗi cặp (user, concept) chỉ đếm 1 lần
 
-KẾT QUẢ: 160,020,500 cặp user-concept
+KẾT QUẢ: 12,843,294 cặp user-concept
+
+
+Watch pairs: 6,366,938
 
 Bước C: Tính số khái niệm khớp giữa user và course
     user_course_concept_match = user_concepts_watch.join(
